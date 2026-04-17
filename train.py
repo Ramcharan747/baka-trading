@@ -112,19 +112,23 @@ def _batches(
     window: int,
     batch_size: int,
 ):
-    """Yield consecutive batches with NO shuffling."""
-    ds = SequentialWindowDataset(features, labels, window)
-    if len(ds) == 0:
+    """Yield consecutive batches with NO shuffling via zero-copy stride tricks."""
+    n_samples = len(features) - window + 1
+    if n_samples <= 0:
         return
+
+    # Convert to flat tensors
+    X_f = torch.from_numpy(features.astype(np.float32))
+    y_f = torch.from_numpy(labels.astype(np.float32))
+
+    # O(1) sliding window view: [T, D] -> [T-window+1, D, window] -> [T-window+1, window, D]
+    X_windows = X_f.unfold(0, window, 1).transpose(1, 2)
+    y_targets = y_f[window - 1 : window - 1 + n_samples]
+
     idx = 0
-    while idx + batch_size <= len(ds):
-        Xs, ys = [], []
-        for j in range(batch_size):
-            X, y = ds[idx + j]
-            Xs.append(X)
-            ys.append(y)
+    while idx + batch_size <= n_samples:
+        yield X_windows[idx : idx + batch_size], y_targets[idx : idx + batch_size]
         idx += batch_size
-        yield torch.stack(Xs), torch.stack(ys)
 
 
 def train_one_window(
