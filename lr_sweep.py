@@ -45,6 +45,8 @@ def parse_args():
     p.add_argument("--use-kaggle-indicators", action="store_true")
     p.add_argument("--model", default="baka", choices=["lstm", "baka"])
     p.add_argument("--cms-ablate", type=int, default=-1)
+    p.add_argument("--cms-schedule", default="minute",
+                   help="'minute' [16,256,4096,65536] or 'daily' [5,21,63,252]")
     p.add_argument("--window", type=int, default=60)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--epochs", type=int, default=5)
@@ -57,11 +59,24 @@ def parse_args():
     return p.parse_args()
 
 
+def _parse_cms_schedule(s):
+    PRESETS = {
+        "minute": ((16, 256, 4096, 65536), (1e-3, 1e-4, 1e-5, 1e-6)),
+        "daily":  ((5, 21, 63, 252),       (1e-2, 5e-3, 1e-3, 5e-4)),
+    }
+    if s in PRESETS: return PRESETS[s]
+    vals = tuple(int(x) for x in s.split(","))
+    return vals, (1e-2, 5e-3, 1e-3, 5e-4)[:len(vals)]
+
+
 def make_model(args, n_features: int) -> torch.nn.Module:
     if args.model == "lstm":
         return LSTMBaseline(n_features=n_features, hidden_dim=32, n_layers=1,
                             n_outputs=1, dropout=0.1)
-    cfg = BAKAFinanceConfig(n_features=n_features, n_outputs=1)
+    cms_schedule, cms_lr = _parse_cms_schedule(args.cms_schedule)
+    cfg = BAKAFinanceConfig(n_features=n_features, n_outputs=1,
+                            cms_levels=len(cms_schedule),
+                            cms_schedule=cms_schedule, cms_lr=cms_lr)
     model = MiniBAKAFinance(cfg)
     if args.cms_ablate >= 0:
         model.ablate_cms_level(args.cms_ablate)

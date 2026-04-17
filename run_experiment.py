@@ -68,6 +68,9 @@ def parse_args():
     p.add_argument("--model", default="lstm", choices=["lstm", "baka"])
     p.add_argument("--cms-ablate", type=int, default=-1,
                    help="(BAKA only) Zero out CMS level k and evaluate; -1 = no ablation")
+    p.add_argument("--cms-schedule", default="minute",
+                   help="CMS update schedule: 'minute' [16,256,4096,65536] or "
+                        "'daily' [5,21,63,252] (week/month/quarter/year)")
     p.add_argument("--window", type=int, default=32)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--epochs", type=int, default=3)
@@ -87,6 +90,21 @@ def parse_args():
 
 # --------------------------------------------------------------- factories
 
+def _parse_cms_schedule(schedule_arg: str):
+    """Parse CMS schedule: preset name or custom comma-separated values."""
+    PRESETS = {
+        "minute": ((16, 256, 4096, 65536), (1e-3, 1e-4, 1e-5, 1e-6)),
+        "daily":  ((5, 21, 63, 252),       (1e-2, 5e-3, 1e-3, 5e-4)),
+    }
+    if schedule_arg in PRESETS:
+        return PRESETS[schedule_arg]
+    # Custom: "5,21,63,252"
+    vals = tuple(int(x) for x in schedule_arg.split(","))
+    # Use default LRs scaled: fastest=1e-2, each 3-5× slower
+    default_lrs = (1e-2, 5e-3, 1e-3, 5e-4)[:len(vals)]
+    return vals, default_lrs
+
+
 def make_model(args, n_features: int) -> torch.nn.Module:
     if args.model == "lstm":
         return LSTMBaseline(
@@ -96,11 +114,20 @@ def make_model(args, n_features: int) -> torch.nn.Module:
             n_outputs=1,
             dropout=0.1,
         )
-    cfg = BAKAFinanceConfig(n_features=n_features, n_outputs=1)
+    cms_schedule, cms_lr = _parse_cms_schedule(args.cms_schedule)
+    cfg = BAKAFinanceConfig(
+        n_features=n_features, n_outputs=1,
+        cms_levels=len(cms_schedule),
+        cms_schedule=cms_schedule,
+        cms_lr=cms_lr,
+    )
     model = MiniBAKAFinance(cfg)
     if args.cms_ablate >= 0:
+        print(f"[BAKA] CMS schedule: {cms_schedule}  LRs: {cms_lr}")
         print(f"[BAKA] Ablating CMS level {args.cms_ablate}")
         model.ablate_cms_level(args.cms_ablate)
+    else:
+        print(f"[BAKA] CMS schedule: {cms_schedule}  LRs: {cms_lr}")
     return model
 
 
