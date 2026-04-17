@@ -18,13 +18,14 @@ intraday data.
 | File | What it does |
 |------|-------------|
 | `data_download.py` | Pulls NSE data via yfinance / nsepy / Zerodha Kite, caches to parquet |
-| `kaggle_loader.py` | Loads Kaggle-hosted NSE datasets (per-symbol CSVs or combined files) |
+| `kaggle_loader.py` | Loads Kaggle Nifty 500 dataset (`_minute.csv` files), computes indicators |
 | `features.py` | 11-13 **stationary** features (returns, vol, momentum, range, time-of-day) |
 | `ic_test.py` | Information Coefficient test, lookahead-bias guard, regime-conditioned IC |
 | `models.py` | Mini-BAKA (Titans + 4-level CMS + causal attention, ~36K params) + LSTM baseline |
 | `train.py` | Sequential walk-forward training — **no shuffling**, IC/Sharpe loss |
 | `paper_trading.py` | `PaperTradingSimulator` with costs, slippage, stops, position caps |
 | `run_experiment.py` | Master orchestrator — download → features → IC → train → paper trade |
+| `colab_cells.py` | Ready-to-use Colab notebook cells |
 
 ## The rules this codebase is built around
 
@@ -43,43 +44,61 @@ and your backtest Sharpe will look amazing while live performance is zero.
 5. **Walk-forward validation always.** Train on months 1–6, test on 7.
    Then train on 1–7, test on 8. Never test on data the model saw.
 
-## Quickstart — run on NIFTY daily (3 years)
+## Dataset: Kaggle Nifty 500
+
+This repo uses the [Nifty 500 intraday dataset](https://www.kaggle.com/datasets/debashis74017/algo-trading-data-nifty-100-data-with-indicators) from Kaggle:
+
+- **500+ symbols**, one CSV per symbol (named `{SYMBOL}_minute.csv`)
+- **1-minute bars** from 2015 to 2026 (updated weekly)
+- **6 columns**: `date, open, high, low, close, volume`
+- **No pre-computed indicators** — despite the dataset name. We compute RSI, MACD, EMA, Bollinger Bands, ATR, and OBV in `kaggle_loader.compute_indicators()`
+
+## Quickstart — auto-download from Kaggle
 
 ```bash
 pip install -r requirements.txt
+
+# Auto-download the dataset and train (downloads ~4 GB):
+python run_experiment.py \
+    --source kaggle --kaggle-download \
+    --symbol COALINDIA --start 2024-01-01 --end 2024-12-31 \
+    --model lstm --use-kaggle-indicators \
+    --window 60 --batch-size 128 --epochs 3
+```
+
+## Quickstart — with local dataset
+
+```bash
+# If you already have the dataset downloaded:
+python run_experiment.py \
+    --source kaggle --kaggle-path /path/to/dataset \
+    --symbol COALINDIA --start 2020-01-01 --end 2024-12-31 \
+    --model baka --use-kaggle-indicators \
+    --window 60 --batch-size 128 --epochs 5
+```
+
+`--use-kaggle-indicators` computes and merges technical indicators
+(RSI-14, MACD, EMA20, Bollinger, ATR-14, OBV) into the feature set on
+top of the base stationary features.
+
+## Quickstart — NIFTY daily via yfinance
+
+```bash
 python run_experiment.py \
     --symbol NIFTY --start 2022-01-01 --end 2024-12-31 \
     --interval 1d --model lstm \
     --window 20 --batch-size 32 --epochs 3
 ```
 
-## Quickstart — run on the Kaggle Nifty 100 dataset
-
-```bash
-pip install -q kaggle
-mkdir -p ~/.kaggle && mv kaggle.json ~/.kaggle/  # your API key
-chmod 600 ~/.kaggle/kaggle.json
-kaggle datasets download -d debashis74017/algo-trading-data-nifty-100-data-with-indicators -p data/kaggle --unzip
-
-python run_experiment.py \
-    --source kaggle --kaggle-path data/kaggle \
-    --symbol RELIANCE --start 2020-01-01 --end 2024-12-31 \
-    --model baka --use-kaggle-indicators \
-    --window 60 --batch-size 128 --epochs 5
-```
-
-The Kaggle dataset has indicators (RSI, MACD, etc.) pre-computed. Passing
-`--use-kaggle-indicators` merges them into the feature set after the
-standard stationary features are computed.
-
 ## CMS ablation — the paper's central experiment
 
 ```bash
 for level in -1 0 1 2 3; do
     python run_experiment.py \
-        --symbol NIFTY --start 2020-01-01 --end 2024-12-31 \
-        --model baka --cms-ablate $level \
-        --window 32 --batch-size 64 --epochs 10
+        --source kaggle --kaggle-path /path/to/dataset \
+        --symbol COALINDIA --start 2020-01-01 --end 2024-12-31 \
+        --model baka --cms-ablate $level --use-kaggle-indicators \
+        --window 60 --batch-size 128 --epochs 10
 done
 ```
 

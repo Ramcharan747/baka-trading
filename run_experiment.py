@@ -5,7 +5,12 @@ Usage:
     python run_experiment.py --symbol NIFTY --start 2022-01-01 --end 2024-12-31 \
         --interval 1d --model lstm
 
-    python run_experiment.py --symbol NIFTY --model baka --cms-ablate 3
+    python run_experiment.py --symbol COALINDIA --model baka --cms-ablate 3
+
+    # Auto-download from Kaggle and train:
+    python run_experiment.py --source kaggle --kaggle-download \
+        --symbol COALINDIA --start 2024-01-01 --end 2024-12-31 \
+        --model baka --use-kaggle-indicators
 
 The script is intentionally long but linear — read top to bottom.
 """
@@ -23,6 +28,7 @@ import torch
 
 import data_download
 import kaggle_loader
+from kaggle_loader import compute_indicators
 from features import compute_features, make_labels, align_features_labels
 from ic_test import (
     ic_test,
@@ -51,8 +57,12 @@ def parse_args():
                    choices=["auto", "yfinance", "nsepy", "kite", "kaggle"])
     p.add_argument("--kaggle-path", default=None,
                    help="Path to a Kaggle dataset directory or CSV (e.g. /kaggle/input/...)")
+    p.add_argument("--kaggle-download", action="store_true",
+                   help="Auto-download the Nifty 500 dataset via kagglehub")
+    p.add_argument("--kaggle-key", default=None,
+                   help="Kaggle API key (KGAT_...) for download")
     p.add_argument("--use-kaggle-indicators", action="store_true",
-                   help="Pass through indicator columns from the Kaggle CSV as extra features")
+                   help="Compute and merge technical indicators (RSI, MACD, etc.) as extra features")
     p.add_argument("--lookahead", type=int, default=5)
     p.add_argument("--cost-bps", type=float, default=3.0)
     p.add_argument("--model", default="lstm", choices=["lstm", "baka"])
@@ -99,16 +109,29 @@ def main():
 
     # --- Step 1: data ---
     print("\n[1/6] Loading data...")
-    if args.source == "kaggle" or args.kaggle_path:
-        if not args.kaggle_path:
-            raise ValueError("--source kaggle requires --kaggle-path")
-        raw = kaggle_loader.load_kaggle_dataset(args.kaggle_path, args.symbol)
+    if args.source == "kaggle" or args.kaggle_path or args.kaggle_download:
+        # Resolve the dataset path
+        kaggle_path = args.kaggle_path
+        if not kaggle_path:
+            if args.kaggle_download:
+                print("  Downloading dataset via kagglehub...")
+                kaggle_path = kaggle_loader.download_dataset(args.kaggle_key)
+                print(f"  Dataset at: {kaggle_path}")
+            else:
+                raise ValueError(
+                    "--source kaggle requires --kaggle-path or --kaggle-download"
+                )
+        raw = kaggle_loader.load_kaggle_dataset(kaggle_path, args.symbol)
         raw = raw.loc[args.start:args.end]
-        ohlcv, indicators = kaggle_loader.split_ohlcv_and_indicators(raw)
+        ohlcv, _ = kaggle_loader.split_ohlcv_and_indicators(raw)
         df = ohlcv
-        extra_feats = indicators if args.use_kaggle_indicators else None
-        print(f"  Kaggle: {len(df)} rows, OHLCV + {len(indicators.columns)} indicators "
-              f"(using indicators: {args.use_kaggle_indicators})")
+        # Dataset has NO pre-computed indicators — compute them if requested
+        if args.use_kaggle_indicators:
+            extra_feats = compute_indicators(raw)
+            print(f"  Kaggle: {len(df):,} rows, OHLCV + {len(extra_feats.columns)} computed indicators")
+        else:
+            extra_feats = None
+            print(f"  Kaggle: {len(df):,} rows, OHLCV only")
     else:
         df = data_download.load_or_download(
             args.symbol, args.start, args.end, args.interval, args.source
