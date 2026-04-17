@@ -1,8 +1,14 @@
 """
-Threshold analysis and paper-trading sweep.
+Threshold + stop-loss analysis with z-score normalized predictions.
 
-Trains a model, captures raw predictions on the held-out tail, then
-sweeps signal_threshold to find the optimal operating point.
+Trains a model, z-score normalizes the raw predictions, then does a 2D
+sweep over (signal_threshold, stop_loss_pct) to find the optimal
+operating point.
+
+The key insight: raw model outputs are uncalibrated scores (mean ~0.7,
+std ~1.0 for BAKA; mean ~0.85, std ~0.06 for LSTM). After z-scoring,
+threshold=0.5 means "trade only when prediction is 0.5σ from mean",
+which has proper statistical meaning.
 
 Usage (Colab):
     python threshold_analysis.py \
@@ -70,9 +76,10 @@ def make_model(args, n_features: int) -> torch.nn.Module:
 
 def main():
     args = parse_args()
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print(f"  Threshold Analysis: {args.model.upper()} on {args.symbol}")
-    print(f"{'='*60}")
+    print(f"  (with z-score normalization)")
+    print(f"{'='*70}")
 
     # --- Load data ---
     print("\n[1/4] Loading data...")
@@ -116,7 +123,12 @@ def main():
 
     model = make_model(args, n_features)
     train_one_window(model, Xtrain, ytrain, cfg)
-    preds, _ = predict(model, Xtail, ytail, cfg)
+    preds_raw, _ = predict(model, Xtail, ytail, cfg)
+
+    # --- Z-score normalize predictions ---
+    raw_mean = preds_raw.mean()
+    raw_std = preds_raw.std() + 1e-8
+    preds = (preds_raw - raw_mean) / raw_std
 
     # Align predictions back to timestamps
     pred_idx = X.iloc[holdout_start + cfg.window - 1:
@@ -124,102 +136,150 @@ def main():
     preds_s = pd.Series(preds, index=pred_idx)
     prices_s = df["close"].reindex(pred_idx)
 
-    # --- Prediction distribution analysis ---
-    print(f"\n{'='*60}")
-    print(f"  PREDICTION DISTRIBUTION ANALYSIS")
-    print(f"{'='*60}")
-    abs_preds = np.abs(preds)
-    percentiles = [10, 25, 50, 75, 90, 95, 99]
-    print(f"\n  Total predictions: {len(preds):,}")
+    # --- Distribution analysis ---
+    print(f"\n{'='*70}")
+    print(f"  RAW PREDICTION DISTRIBUTION")
+    print(f"{'='*70}")
+    print(f"  Count:  {len(preds_raw):,}")
+    print(f"  Mean:   {raw_mean:+.6f}")
+    print(f"  Std:    {raw_std:.6f}")
+    print(f"  Min:    {preds_raw.min():+.6f}")
+    print(f"  Max:    {preds_raw.max():+.6f}")
+    pct_positive = (preds_raw > 0).sum() / len(preds_raw) * 100
+    print(f"  %% positive: {pct_positive:.1f}%")
+
+    print(f"\n{'='*70}")
+    print(f"  Z-SCORED PREDICTION DISTRIBUTION")
+    print(f"{'='*70}")
+    abs_z = np.abs(preds)
     print(f"  Mean:   {preds.mean():+.6f}")
     print(f"  Std:    {preds.std():.6f}")
     print(f"  Min:    {preds.min():+.6f}")
     print(f"  Max:    {preds.max():+.6f}")
-    print(f"\n  |prediction| percentiles:")
-    for p in percentiles:
-        val = np.percentile(abs_preds, p)
-        print(f"    P{p:>2d}: {val:.6f}")
+    pct_positive_z = (preds > 0).sum() / len(preds) * 100
+    print(f"  %% positive (long signals): {pct_positive_z:.1f}%")
+    print(f"  %% negative (short signals): {100-pct_positive_z:.1f}%")
+    print(f"\n  |z-score| percentiles:")
+    for p in [10, 25, 50, 75, 90, 95, 99]:
+        val = np.percentile(abs_z, p)
+        print(f"    P{p:>2d}: {val:.4f}")
 
-    # --- Threshold sweep ---
-    print(f"\n{'='*60}")
-    print(f"  THRESHOLD SWEEP")
-    print(f"{'='*60}")
+    # --- 2D sweep: signal_threshold × stop_loss_pct ---
+    print(f"\n{'='*70}")
+    print(f"  2D SWEEP: signal_threshold × stop_loss")
+    print(f"{'='*70}")
 
-    # Build threshold candidates from prediction distribution
-    thresholds = sorted(set([
-        0.0001, 0.0002, 0.0005,
-        0.001, 0.002, 0.003, 0.005,
-        0.01, 0.02, 0.03, 0.05,
-        np.percentile(abs_preds, 50),
-        np.percentile(abs_preds, 60),
-        np.percentile(abs_preds, 70),
-        np.percentile(abs_preds, 75),
-        np.percentile(abs_preds, 80),
-        np.percentile(abs_preds, 85),
-        np.percentile(abs_preds, 90),
-        np.percentile(abs_preds, 95),
-    ]))
+    thresholds = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+    stop_losses = [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
 
     rows = []
     for thresh in thresholds:
-        sim_cfg = SimConfig(
-            cost_bps=args.cost_bps,
-            signal_threshold=thresh,
-        )
-        _, metrics = run_simulation(preds_s, prices_s, sim_cfg)
-        would_trade = int(np.sum(abs_preds > thresh))
-        rows.append({
-            "threshold": thresh,
-            "trades": metrics["trades"],
-            "signals_above": would_trade,
-            "return_pct": metrics["total_return"] * 100,
-            "sharpe": metrics["sharpe"],
-            "max_dd_pct": metrics["max_dd"] * 100,
-            "win_rate": metrics["win_rate"] * 100,
-        })
+        for sl in stop_losses:
+            sim_cfg = SimConfig(
+                cost_bps=args.cost_bps,
+                signal_threshold=thresh,
+                stop_loss_pct=sl,
+            )
+            _, metrics = run_simulation(preds_s.copy(), prices_s.copy(), sim_cfg)
+            rows.append({
+                "threshold": thresh,
+                "stop_loss": sl,
+                "trades": metrics["trades"],
+                "return_pct": metrics["total_return"] * 100,
+                "sharpe": metrics["sharpe"],
+                "max_dd_pct": metrics["max_dd"] * 100,
+                "win_rate": metrics["win_rate"] * 100,
+                "avg_win": metrics["avg_win"],
+                "avg_loss": metrics["avg_loss"],
+            })
 
     df_sweep = pd.DataFrame(rows)
-    print(f"\n{'threshold':>12s}  {'trades':>6s}  {'signals':>7s}  {'return%':>8s}  "
-          f"{'sharpe':>7s}  {'maxDD%':>7s}  {'winrate':>7s}")
-    print("-" * 70)
-    for _, r in df_sweep.iterrows():
-        marker = " <-- best" if r["sharpe"] == df_sweep["sharpe"].max() else ""
-        print(f"  {r['threshold']:>10.6f}  {r['trades']:>6.0f}  {r['signals_above']:>7.0f}  "
-              f"{r['return_pct']:>+7.2f}%  {r['sharpe']:>+6.2f}  "
-              f"{r['max_dd_pct']:>+6.2f}%  {r['win_rate']:>5.1f}%{marker}")
 
-    # Find best threshold
+    # Print as a grid: threshold on rows, stop_loss on columns, value = Sharpe
+    print(f"\n  SHARPE RATIO GRID (threshold × stop_loss):")
+    print(f"  {'thresh':>8s}", end="")
+    for sl in stop_losses:
+        print(f"  SL={sl*100:.1f}%", end="")
+    print()
+    print("  " + "-" * (10 + 10 * len(stop_losses)))
+    best_sharpe = df_sweep["sharpe"].max()
+    for thresh in thresholds:
+        print(f"  {thresh:>8.2f}", end="")
+        for sl in stop_losses:
+            row = df_sweep[(df_sweep["threshold"] == thresh) &
+                           (df_sweep["stop_loss"] == sl)].iloc[0]
+            marker = " *" if row["sharpe"] == best_sharpe else "  "
+            print(f"  {row['sharpe']:>+5.2f}{marker}", end="")
+        print()
+
+    # Print trade count grid
+    print(f"\n  TRADE COUNT GRID (threshold × stop_loss):")
+    print(f"  {'thresh':>8s}", end="")
+    for sl in stop_losses:
+        print(f"  SL={sl*100:.1f}%", end="")
+    print()
+    print("  " + "-" * (10 + 10 * len(stop_losses)))
+    for thresh in thresholds:
+        print(f"  {thresh:>8.2f}", end="")
+        for sl in stop_losses:
+            row = df_sweep[(df_sweep["threshold"] == thresh) &
+                           (df_sweep["stop_loss"] == sl)].iloc[0]
+            print(f"  {row['trades']:>7.0f}", end="")
+        print()
+
+    # Print return grid
+    print(f"\n  RETURN %% GRID (threshold × stop_loss):")
+    print(f"  {'thresh':>8s}", end="")
+    for sl in stop_losses:
+        print(f"  SL={sl*100:.1f}%", end="")
+    print()
+    print("  " + "-" * (10 + 10 * len(stop_losses)))
+    for thresh in thresholds:
+        print(f"  {thresh:>8.2f}", end="")
+        for sl in stop_losses:
+            row = df_sweep[(df_sweep["threshold"] == thresh) &
+                           (df_sweep["stop_loss"] == sl)].iloc[0]
+            print(f"  {row['return_pct']:>+6.2f}%", end="")
+        print()
+
+    # Find best
     best_idx = df_sweep["sharpe"].idxmax()
     best = df_sweep.loc[best_idx]
-    print(f"\n{'='*60}")
-    print(f"  BEST THRESHOLD: {best['threshold']:.6f}")
-    print(f"  Sharpe={best['sharpe']:+.2f}  Return={best['return_pct']:+.2f}%  "
-          f"MaxDD={best['max_dd_pct']:+.2f}%  Trades={best['trades']:.0f}  "
-          f"WinRate={best['win_rate']:.1f}%")
-    print(f"{'='*60}")
+    print(f"\n{'='*70}")
+    print(f"  BEST OPERATING POINT")
+    print(f"{'='*70}")
+    print(f"  Signal threshold : {best['threshold']:.2f} σ")
+    print(f"  Stop loss        : {best['stop_loss']*100:.1f}%")
+    print(f"  Sharpe           : {best['sharpe']:+.2f}")
+    print(f"  Return           : {best['return_pct']:+.2f}%")
+    print(f"  Max Drawdown     : {best['max_dd_pct']:+.2f}%")
+    print(f"  Trades           : {best['trades']:.0f}")
+    print(f"  Win Rate         : {best['win_rate']:.1f}%")
+    print(f"  Avg Win / Loss   : {best['avg_win']:+.2f} / {best['avg_loss']:+.2f}")
+    print(f"{'='*70}")
 
-    # Save sweep results
+    # Save
     sweep_path = ARTIFACT_DIR / f"sweep_{args.symbol}_{args.model}.json"
     df_sweep.to_json(sweep_path, orient="records", indent=2)
-    print(f"\nSaved sweep to: {sweep_path}")
 
-    # Save prediction stats
-    stats_path = ARTIFACT_DIR / f"pred_stats_{args.symbol}_{args.model}.json"
     stats = {
         "model": args.model,
         "symbol": args.symbol,
         "n_predictions": len(preds),
-        "pred_mean": float(preds.mean()),
-        "pred_std": float(preds.std()),
-        "pred_min": float(preds.min()),
-        "pred_max": float(preds.max()),
-        "abs_percentiles": {str(p): float(np.percentile(abs_preds, p))
-                           for p in percentiles},
+        "raw_mean": float(raw_mean),
+        "raw_std": float(raw_std),
+        "z_pct_positive": float(pct_positive_z),
+        "z_pct_negative": float(100 - pct_positive_z),
         "best_threshold": float(best["threshold"]),
+        "best_stop_loss": float(best["stop_loss"]),
         "best_sharpe": float(best["sharpe"]),
+        "best_return_pct": float(best["return_pct"]),
+        "best_trades": int(best["trades"]),
     }
+    stats_path = ARTIFACT_DIR / f"pred_stats_{args.symbol}_{args.model}.json"
     stats_path.write_text(json.dumps(stats, indent=2))
-    print(f"Saved prediction stats to: {stats_path}")
+    print(f"\nSaved to: {sweep_path}")
+    print(f"Saved to: {stats_path}")
 
 
 if __name__ == "__main__":

@@ -75,6 +75,10 @@ def parse_args():
     p.add_argument("--train-frac", type=float, default=0.6)
     p.add_argument("--val-frac", type=float, default=0.1)
     p.add_argument("--skip-paper-trading", action="store_true")
+    p.add_argument("--signal-threshold", type=float, default=None,
+                   help="Override signal_threshold for paper trading (applied AFTER z-score normalization)")
+    p.add_argument("--stop-loss", type=float, default=None,
+                   help="Override stop_loss_pct for paper trading (e.g. 0.02 = 2%%)")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -221,12 +225,25 @@ def main():
     train_one_window(model, Xtrain, ytrain, cfg)
     preds, _ = predict(model, Xtail, ytail, cfg)
 
+    # Z-score normalize predictions so paper trading thresholds work properly.
+    # Raw model outputs are uncalibrated scores, not return predictions.
+    preds_mean = preds.mean()
+    preds_std = preds.std() + 1e-8
+    preds_z = (preds - preds_mean) / preds_std
+    print(f"  Raw  preds: mean={preds_mean:+.4f} std={preds_std:.4f} range=[{preds.min():+.4f}, {preds.max():+.4f}]")
+    print(f"  Z-scored:   mean={preds_z.mean():+.4f} std={preds_z.std():.4f} range=[{preds_z.min():+.4f}, {preds_z.max():+.4f}]")
+
     # Align predictions back to timestamps (preds start at index window-1 in the tail)
     pred_idx = X.iloc[holdout_start + cfg.window - 1 : holdout_start + cfg.window - 1 + len(preds)].index
-    preds_s = pd.Series(preds, index=pred_idx)
+    preds_s = pd.Series(preds_z, index=pred_idx)
     prices_s = df["close"].reindex(pred_idx)
 
-    sim_cfg = SimConfig(cost_bps=args.cost_bps)
+    sim_cfg = SimConfig(
+        cost_bps=args.cost_bps,
+        signal_threshold=args.signal_threshold if args.signal_threshold is not None else 0.5,
+        stop_loss_pct=args.stop_loss if args.stop_loss is not None else 0.02,
+    )
+    print(f"  Paper trading with: threshold={sim_cfg.signal_threshold}, stop_loss={sim_cfg.stop_loss_pct*100:.1f}%")
     sim, metrics = run_simulation(preds_s, prices_s, sim_cfg)
     m_path = ARTIFACT_DIR / f"paper_{args.symbol}_{args.model}_{args.interval}.json"
     m_path.write_text(json.dumps(metrics, indent=2))
