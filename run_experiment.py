@@ -71,6 +71,8 @@ def parse_args():
     p.add_argument("--window", type=int, default=32)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--lr", type=float, default=1e-3,
+                   help="Training learning rate (default 1e-3)")
     p.add_argument("--loss", default="ic", choices=["ic", "sharpe"])
     p.add_argument("--train-frac", type=float, default=0.6)
     p.add_argument("--val-frac", type=float, default=0.1)
@@ -189,6 +191,7 @@ def main():
         window=args.window,
         batch_size=args.batch_size,
         epochs=args.epochs,
+        lr=args.lr,
         loss=args.loss,
         device=args.device,
     )

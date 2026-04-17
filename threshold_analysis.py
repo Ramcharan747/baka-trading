@@ -54,6 +54,7 @@ def parse_args():
     p.add_argument("--window", type=int, default=60)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--epochs", type=int, default=5)
+    p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--loss", default="ic", choices=["ic", "sharpe"])
     p.add_argument("--train-frac", type=float, default=0.6)
     p.add_argument("--val-frac", type=float, default=0.1)
@@ -112,7 +113,8 @@ def main():
     # --- Train + predict on held-out tail ---
     print("\n[3/4] Training and predicting on held-out tail...")
     cfg = TrainConfig(window=args.window, batch_size=args.batch_size,
-                      epochs=args.epochs, loss=args.loss, device=args.device)
+                      epochs=args.epochs, lr=args.lr, loss=args.loss,
+                      device=args.device)
     n_features = X.shape[1]
 
     holdout_start = int(len(X) * (args.train_frac + args.val_frac))
