@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Data and artifacts (these can be regenerated)
+data/
+artifacts/
+*.parquet
+*.pkl
+*.pt
+*.ckpt
+logs/
+
+# Credentials — NEVER commit these
+kaggle.json
+.kaggle/
+.env
+*.pem
+*.key
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+*.ipynb
