@@ -146,13 +146,11 @@ class CMSLevel(nn.Module):
         self.register_buffer(
             "summary", torch.zeros(d_model), persistent=False
         )
-        self.register_buffer(
-            "step", torch.zeros((), dtype=torch.long), persistent=False
-        )
+        self.step_cnt = 0
 
     def reset(self) -> None:
         self.summary.zero_()
-        self.step.zero_()
+        self.step_cnt = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Broadcast the current summary back into the sequence."""
@@ -162,8 +160,8 @@ class CMSLevel(nn.Module):
     @torch.no_grad()
     def maybe_update(self, x_step: torch.Tensor) -> None:
         """x_step: [B, D] — one timestep aggregated over the batch."""
-        self.step += 1
-        if int(self.step.item()) % self.period == 0:
+        self.step_cnt += 1
+        if self.step_cnt % self.period == 0:
             # Sigmoid-gated EMA into the summary.
             batch_mean = x_step.mean(dim=0)
             gate = torch.sigmoid(self.gate(batch_mean))

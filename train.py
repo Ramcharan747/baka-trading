@@ -153,19 +153,21 @@ def train_one_window(
         if hasattr(model, "reset_memory"):
             model.reset_memory()
         for X, y in _batches(features, labels, cfg.window, cfg.batch_size):
-            X = X.to(device)
-            y = y.to(device)
+            X = X.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             preds = model(X).squeeze(-1)
             loss = loss_fn(preds, y)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
-            epoch_losses.append(float(loss.item()))
+            epoch_losses.append(loss.detach())
             step += 1
             if step % cfg.log_every == 0:
-                print(f"  epoch {epoch} step {step} loss={np.mean(epoch_losses[-cfg.log_every:]):.4f}")
-        print(f"epoch {epoch}: mean loss={np.mean(epoch_losses):.4f}")
+                recent_loss = np.mean([l.item() for l in epoch_losses[-cfg.log_every:]])
+                print(f"  epoch {epoch} step {step} loss={recent_loss:.4f}")
+        mean_loss = np.mean([l.item() for l in epoch_losses])
+        print(f"epoch {epoch}: mean loss={mean_loss:.4f}")
     return model
 
 
