@@ -85,6 +85,8 @@ def parse_args():
     p.add_argument("--stop-loss", type=float, default=None,
                    help="Override stop_loss_pct for paper trading (e.g. 0.02 = 2%%)")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--seed", type=int, default=42,
+                   help="Random seed for reproducibility")
     return p.parse_args()
 
 
@@ -135,9 +137,18 @@ def make_model(args, n_features: int) -> torch.nn.Module:
 
 def main():
     args = parse_args()
+
+    # Seed all RNGs for reproducibility
+    import random
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     print(f"\n================ BAKA Trading Experiment ================")
     print(f"Symbol: {args.symbol}  range: {args.start} -> {args.end}  interval: {args.interval}")
-    print(f"Model : {args.model}  device: {args.device}")
+    print(f"Model : {args.model}  device: {args.device}  seed: {args.seed}")
     print("=" * 60)
 
     # --- Step 1: data ---
