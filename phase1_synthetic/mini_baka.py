@@ -160,7 +160,10 @@ class CMSLevel(nn.Module):
         super().__init__()
         self.period = period
         self.lr = lr
-        self.gate = nn.Linear(d_model, d_model)
+        # NOTE: No learnable gate here. The old gate was inside torch.no_grad()
+        # so it NEVER received gradients — 100% dead parameters.
+        # Use a fixed interpolation instead. The CMS combine layer
+        # (which IS in the autograd graph) handles the learned weighting.
 
     def init_state(self, d_model: int, device: torch.device) -> dict:
         return {
@@ -181,10 +184,10 @@ class CMSLevel(nn.Module):
         new_summary = state["summary"]
 
         if new_count >= self.period:
+            # Fire: simple EMA update, no gate
             acc_mean = new_sum / new_count
             with torch.no_grad():
-                g = torch.sigmoid(self.gate(acc_mean))
-                new_summary = (1 - self.lr) * state["summary"] + self.lr * g * acc_mean
+                new_summary = (1 - self.lr) * state["summary"] + self.lr * acc_mean
             new_sum = torch.zeros_like(new_sum)
             new_count = 0
 
@@ -235,7 +238,14 @@ class MiniBAKA(nn.Module):
         c = self.cfg
 
         # Input: project features → d_model
-        self.input_norm = nn.LayerNorm(c.n_features)
+        # NOTE: Do NOT use LayerNorm here when n_features=1.
+        # LayerNorm(1) computes (x - mean)/std where mean=x and std=0,
+        # which destroys the input entirely (outputs constant zero).
+        # For 1D input, just project directly. For multi-feature, use LayerNorm.
+        if c.n_features > 1:
+            self.input_norm = nn.LayerNorm(c.n_features)
+        else:
+            self.input_norm = nn.Identity()
         self.input_proj = nn.Linear(c.n_features, c.d_model)
 
         # Titans: per-timestep fast-weight recurrence (REPLACES attention)
