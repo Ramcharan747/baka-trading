@@ -49,15 +49,25 @@ def ic_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     Maximizes Pearson correlation between predictions and targets.
     Uses z-scoring for scale invariance.
 
+    CRITICAL FIX: when predictions are near-constant (model just initialized
+    or collapsed), pred.std() ≈ 0 and IC gradient is zero/NaN. We fall back
+    to MSE loss to bootstrap learning. Once predictions are diverse enough,
+    IC loss kicks in and directly optimizes rank correlation.
+
     Returns NEGATIVE IC so that minimizing this = maximizing IC.
     """
-    # Need enough samples for meaningful correlation
     if pred.numel() < 4:
         return torch.tensor(0.0, device=pred.device, requires_grad=True)
 
+    pred_std = pred.std()
+
+    # Bootstrap: if predictions are near-constant, use MSE to get learning started
+    if pred_std < 1e-4:
+        return ((pred - target) ** 2).mean()
+
     p = pred - pred.mean()
     t = target - target.mean()
-    ic = (p * t).mean() / (p.std() * t.std() + 1e-8)
+    ic = (p * t).mean() / (pred_std * t.std() + 1e-8)
     return -ic  # minimize negative IC = maximize IC
 
 

@@ -1,19 +1,14 @@
 """
 Phase 1: Synthetic frequency-shifting sine test.
 
-Runs 4 conditions × 5 seeds:
-1. BAKA persistent (correct — state flows continuously)
-2. BAKA reset every 60 steps (wrong — what the previous code did)
-3. LSTM persistent
-4. LSTM reset every 60 steps
+Runs BAKA vs LSTM, persistent vs reset, across 5 seeds.
+Includes gradient diagnostics after epoch 1 to catch architecture bugs early.
 
 Gate criteria for passing Phase 1 (proceed to Phase 2):
 - BAKA persistent IC > LSTM persistent IC (by at least 0.01)
 - BAKA persistent IC > BAKA reset IC (persistent state helps)
 - Std across seeds < 0.3 × mean
-- All above hold across majority of seeds
-
-If FAIL: prints W_current norms to diagnose whether DGD is updating.
+- Memory helps in ≥3/5 seeds
 
 Usage:
     python run_phase1.py [--device cuda] [--epochs 10]
@@ -31,7 +26,7 @@ import torch
 from synthetic_data import generate_frequency_shifting_sine
 from mini_baka import MiniBAKA, MiniBAKAConfig
 from mini_lstm import MiniLSTM
-from train_streaming import StreamingTrainer, detach_state
+from train_streaming import StreamingTrainer, detach_state, mse_loss
 
 
 SEEDS = [42, 123, 456, 789, 2024]
@@ -40,7 +35,6 @@ SEEDS = [42, 123, 456, 789, 2024]
 N_STEPS      = 100_000
 TRAIN_FRAC   = 0.7
 VAL_FRAC     = 0.15
-# Test = remaining 0.15
 
 # Training config
 CHUNK_SIZE   = 64
@@ -48,8 +42,8 @@ LR           = 1e-3
 EPOCHS       = 10
 
 # Gate thresholds
-IC_ADVANTAGE = 0.01   # BAKA persistent must beat LSTM persistent by this
-STD_RATIO    = 0.3    # std/mean must be below this
+IC_ADVANTAGE = 0.01
+STD_RATIO    = 0.3
 
 
 def parse_args():
@@ -64,14 +58,67 @@ def parse_args():
 def make_baka():
     return MiniBAKA(MiniBAKAConfig(
         n_features=1, n_outputs=1,
-        d_model=16, n_heads=2, d_ffn=32, dropout=0.0,
-        titans_chunk=16, titans_lr=0.01,
-        cms_levels=3, cms_schedule=(16, 256, 4096), cms_lr=(1e-2, 1e-3, 1e-4),
+        d_model=16, d_ffn=32, dropout=0.0,
+        titans_lr=0.01, titans_clip=0.5,
+        cms_schedule=(16, 256, 4096), cms_lr=(1e-2, 1e-3, 1e-4),
     ))
 
 
 def make_lstm():
     return MiniLSTM(n_features=1, hidden_size=32, num_layers=1, n_outputs=1)
+
+
+def diagnose_baka(model, x_sample, y_sample, device):
+    """
+    Print gradient norms and output behavior to diagnose architecture bugs.
+    Run after first training batch. Shows exactly what is/isn't updating.
+    """
+    model = model.to(device)
+    model.train()
+
+    x_t = torch.from_numpy(x_sample[:64].astype(np.float32)).unsqueeze(0).unsqueeze(-1).to(device)
+    y_t = torch.from_numpy(y_sample[:64].astype(np.float32)).unsqueeze(0).to(device)
+
+    state = model.init_state(batch_size=1, device=device)
+
+    # Check 1: Does output respond to input?
+    with torch.no_grad():
+        x_zeros = torch.zeros_like(x_t)
+        x_ones = torch.ones_like(x_t)
+        out_z, _ = model(x_zeros, state)
+        out_o, _ = model(x_ones, state)
+        diff = (out_o - out_z).abs().mean().item()
+    print(f"\n  DIAGNOSTIC: Output diff (zeros vs ones): {diff:.6f}", end="")
+    if diff < 1e-6:
+        print(" ← ❌ OUTPUT IGNORES INPUT")
+    else:
+        print(" ← ✅ Output responds to input")
+
+    # Check 2: Gradient norms
+    pred, new_state = model(x_t, state)
+    loss = mse_loss(pred.squeeze(), y_t.squeeze())
+    loss.backward()
+
+    print(f"  DIAGNOSTIC: Loss on first batch: {loss.item():.6f}")
+    print(f"  DIAGNOSTIC: Gradient norms:")
+    has_grad = False
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            gn = param.grad.norm().item()
+            marker = "" if gn > 1e-8 else " ← ⚠️ NEAR ZERO"
+            print(f"    {name:40s}: {gn:.6f}{marker}")
+            has_grad = True
+        else:
+            print(f"    {name:40s}: NO GRADIENT ← ❌")
+
+    # Check 3: W_current change
+    w_norm = new_state["titans_W"].norm().item()
+    print(f"  DIAGNOSTIC: W_current norm after 1 chunk: {w_norm:.6f}")
+
+    # Zero grads
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad.zero_()
 
 
 def run_one_condition(
@@ -81,42 +128,46 @@ def run_one_condition(
     x_test, y_test,
     epochs: int,
     device: str,
-    reset_interval: int = 0,
     label: str = "",
     seed: int = 42,
+    run_diagnostic: bool = False,
 ) -> dict:
-    """
-    Train and evaluate one model.
-
-    reset_interval=0: persistent state (correct)
-    reset_interval=N: reset state every N steps (simulates old wrong approach)
-    """
+    """Train and evaluate one model."""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     model = model_factory()
+
+    # Run diagnostic on first seed of BAKA
+    if run_diagnostic and hasattr(model, "titans"):
+        diagnose_baka(model, x_train, y_train, device)
+        # Re-create model with same seed for clean training
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        model = model_factory()
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     trainer = StreamingTrainer(
         model, optimizer,
         chunk_size=CHUNK_SIZE,
         loss_fn="mse",
         device=device,
-        log_every=99999,  # suppress per-chunk logs
+        log_every=99999,
     )
 
     # Train
     t0 = time.time()
     for epoch in range(epochs):
         loss = trainer.train_epoch(x_train, y_train, reset_state=(epoch == 0))
+        # Print epoch loss for first seed to monitor training progress
+        if run_diagnostic and epoch in (0, 1, epochs - 1):
+            print(f"    epoch {epoch}: loss={loss:.6f}")
     train_time = time.time() - t0
 
-    # Evaluate: persistent state (continues from training)
+    # Evaluate
     result_persist = trainer.evaluate(x_test, y_test, reset_state=False)
-
-    # Evaluate: reset state (to measure memory contribution)
     result_reset = trainer.evaluate(x_test, y_test, reset_state=True)
 
-    # Diagnostic: W_current norm (BAKA only)
     w_norm = float("nan")
     if hasattr(model, "titans") and trainer.state is not None:
         w_norm = float(trainer.state["titans_W"].norm().item())
@@ -142,7 +193,7 @@ def main():
     print(f"  Device: {args.device}  Epochs: {args.epochs}  Seeds: {args.seeds}")
     print(f"{'='*70}")
 
-    # Generate data ONCE (same data for all models/seeds)
+    # Generate data ONCE
     x, y, freq = generate_frequency_shifting_sine(n_steps=args.n_steps, seed=0)
 
     n = len(x)
@@ -156,20 +207,19 @@ def main():
     print(f"\n  Data: {n:,} steps → train {len(x_train):,} / val {len(x_val):,} / test {len(x_test):,}")
     print(f"  Freq jumps: {(np.abs(np.diff(freq)) > 0.01).sum()}")
 
-    # Print model sizes
     baka_tmp = make_baka()
     lstm_tmp = make_lstm()
     print(f"  BAKA params: {baka_tmp.param_count():,}")
     print(f"  LSTM params: {lstm_tmp.param_count():,}")
     del baka_tmp, lstm_tmp
 
-    # Run all conditions
     conditions = [
         ("BAKA-persistent", make_baka),
         ("LSTM-persistent", make_lstm),
     ]
 
     all_results = {name: [] for name, _ in conditions}
+    first_seed = True
 
     for seed in args.seeds:
         print(f"\n  ── Seed {seed} ──")
@@ -177,6 +227,7 @@ def main():
             r = run_one_condition(
                 factory, x_train, y_train, x_val, y_val, x_test, y_test,
                 epochs=args.epochs, device=args.device, label=name, seed=seed,
+                run_diagnostic=(first_seed and "BAKA" in name),
             )
             all_results[name].append(r)
             mem_str = ""
@@ -187,6 +238,7 @@ def main():
                   f"IC_reset={r['IC_reset']:+.4f}  "
                   f"delta={r['memory_delta']:+.4f} {status}"
                   f"  MSE={r['MSE_persistent']:.6f}{mem_str}")
+        first_seed = False
 
     # ================================================================ Report
     print(f"\n{'='*70}")
@@ -228,19 +280,16 @@ def main():
     baka = summary["BAKA-persistent"]
     lstm = summary["LSTM-persistent"]
 
-    # Gate 1: BAKA persistent > LSTM persistent
     gate1 = baka["mean_ic_p"] > lstm["mean_ic_p"]
     g1_margin = baka["mean_ic_p"] - lstm["mean_ic_p"]
     g1_str = f"✅ PASS (+{g1_margin:.4f})" if gate1 else f"❌ FAIL ({g1_margin:+.4f})"
     print(f"  Gate 1: BAKA IC > LSTM IC?         {g1_str}")
 
-    # Gate 2: BAKA persistent > BAKA reset (memory helps)
     gate2 = baka["mean_delta"] > 0
     g2_str = f"✅ PASS (delta={baka['mean_delta']:+.4f})" if gate2 else \
              f"❌ FAIL (delta={baka['mean_delta']:+.4f})"
     print(f"  Gate 2: BAKA persistent > reset?   {g2_str}")
 
-    # Gate 3: Low variance across seeds
     if abs(baka["mean_ic_p"]) > 0.001:
         ratio = baka["std_ic_p"] / abs(baka["mean_ic_p"])
     else:
@@ -250,7 +299,6 @@ def main():
              f"❌ FAIL (ratio={ratio:.2f}, need <{STD_RATIO:.1f})"
     print(f"  Gate 3: Std/Mean < {STD_RATIO:.1f}?             {g3_str}")
 
-    # Gate 4: Memory helps in majority of seeds
     gate4 = baka["mem_helps"] >= 3
     g4_str = f"✅ PASS ({baka['mem_helps']}/5)" if gate4 else \
              f"❌ FAIL ({baka['mem_helps']}/5)"
@@ -263,14 +311,15 @@ def main():
         print(f"  ✅ PHASE 1 PASSED — Proceed to Phase 2 (Financial Data)")
     else:
         print(f"  ❌ PHASE 1 FAILED — Fix architecture before Phase 2")
-        # Print diagnostics
         print(f"\n  DIAGNOSTICS:")
-        if not gate2:
-            print(f"  → W_current norms across seeds:")
-            for r in all_results["BAKA-persistent"]:
-                print(f"    seed={r['seed']}: W_norm={r['W_current_norm']:.4f}")
-            print(f"  → If W_norm stays near 0, DGD is not updating W_current")
-            print(f"  → If W_norm explodes, increase gradient clipping")
+        print(f"  → W_current norms across seeds:")
+        for r in all_results["BAKA-persistent"]:
+            print(f"    seed={r['seed']}: W_norm={r['W_current_norm']:.4f}  "
+                  f"MSE={r['MSE_persistent']:.4f}")
+        if baka["mean_ic_p"] < 0.01:
+            print(f"\n  → BAKA IC near zero: model not learning at all")
+            print(f"  → Check gradient norms in DIAGNOSTIC output above")
+            print(f"  → If all gradients non-zero, try larger LR or more epochs")
     print(f"  {'='*60}")
 
     return 0 if all_pass else 1
