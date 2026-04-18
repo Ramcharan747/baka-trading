@@ -112,6 +112,10 @@ class SelfReferentialTitans(nn.Module):
         B, C, D = x_chunk.shape
         outputs = []
 
+        # Fix 3: verify state format on first call
+        if state["step"] == 0:
+            print(f"  M_mem shape: {state['M_mem'][0].shape}, norm: {state['M_mem'][0].norm():.4f}")
+
         for t in range(C):
             x_t = x_chunk[:, t, :]  # [B, D]
 
@@ -125,7 +129,8 @@ class SelfReferentialTitans(nn.Module):
 
             # Scale η and α to valid ranges
             eta_t = self.inner_lr_init * torch.sigmoid(eta_raw)   # [B, 1], positive
-            alpha_t = torch.sigmoid(alpha_raw)                     # [B, 1], in (0,1)
+            # Fix 2: constrain alpha to (0.9, 0.99) — prevents aggressive decay
+            alpha_t = 0.9 + 0.09 * torch.sigmoid(alpha_raw)       # [B, 1], in (0.9, 0.99)
 
             # Static query projection (only q is non-adaptive)
             q_t = self.W_q(x_t)  # [B, D]
@@ -182,10 +187,17 @@ class SelfReferentialTitans(nn.Module):
                 error_mem = state["M_mem"][0] @ k_b - v_hat_mem_b
                 if error_mem.norm() > self.grad_clip:
                     error_mem = error_mem * (self.grad_clip / error_mem.norm())
-                state["M_mem"][0] = state["M_mem"][0] @ decay - eta_b * torch.outer(error_mem, k_b)
+                new_M = state["M_mem"][0] @ decay - eta_b * torch.outer(error_mem, k_b)
+
+                # Fix 2: floor — prevent M_mem collapse to zero
+                new_norm = new_M.norm()
+                if new_norm < 0.05:
+                    new_M = new_M + 0.1 * torch.eye(D, device=new_M.device)
+                state["M_mem"][0] = new_M
 
             # ─── Step 5: Gated output ───
-            combined = o_t + v_t          # o_t has grad through q_t; v_t has grad through M_v_net
+            # Fix 1: add k_t so M_k_net also gets gradient path to loss
+            combined = o_t + v_t + k_t    # o_t→W_q, v_t→M_v_net, k_t→M_k_net
             gate = self.out_gate(x_t)
             out_t = self.out_proj(combined * gate)
             outputs.append(out_t)
