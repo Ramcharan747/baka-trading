@@ -31,18 +31,17 @@ from train import (
     train_epoch_lstm,
     evaluate_hope,
     evaluate_lstm,
-    detach_states,
 )
 from diagnostics import diagnose_hope
 
 
 # ─── Configuration ──────────────────────────────────────────────────
 
-N_STEPS = 10000
-SEEDS = [42, 123]
+N_STEPS = 20000
+SEEDS = [42, 123, 456, 789, 2024]
 CHUNK_SIZE = 64
 LR = 1e-3
-EPOCHS = 5
+EPOCHS = 10
 
 
 def parse_args():
@@ -74,32 +73,6 @@ def make_hope_config() -> HopeConfig:
 def make_lstm():
     """LSTM baseline with ~5K params."""
     return LSTMBaseline(n_features=1, hidden_size=24, n_layers=2, n_outputs=1)
-
-
-def fast_forward_hope(model, x_data, config, device):
-    """
-    Run model through data to get end-of-sequence state.
-    Used to get trained state for evaluation.
-    """
-    states = model.init_state(batch_size=1, device=torch.device(device))
-    chunk = config.chunk_size
-    n_chunks = len(x_data) // chunk
-    step = 0
-
-    with torch.no_grad():
-        for i in range(n_chunks):
-            s = i * chunk
-            e = s + chunk
-            x_chunk = torch.tensor(
-                x_data[s:e], dtype=torch.float32, device=device
-            ).unsqueeze(0).unsqueeze(-1)
-            _, states = model(x_chunk, states, step=step)
-            # Detach periodically to prevent memory issues
-            if (i + 1) % 100 == 0:
-                states = detach_states(states)
-            step += chunk
-
-    return states
 
 
 def run_single_seed(
@@ -136,28 +109,28 @@ def run_single_seed(
         optimizer, T_max=epochs * n_chunks_per_epoch, eta_min=1e-5
     )
 
+    # Train — states persist across epochs (Fix 2)
+    states = hope.init_state(1, torch.device(device))
     for epoch in range(epochs):
-        loss = train_epoch_hope(
+        loss, states = train_epoch_hope(
             hope, x_train, y_train, optimizer,
             chunk_size=config.chunk_size, device=device,
             loss_fn="mse", scheduler=scheduler,
+            states=states,
         )
         if epoch == 0 or (epoch + 1) % 5 == 0 or epoch == epochs - 1:
             print(f"    epoch {epoch}: loss={loss:.6f}")
 
-    # Get end-of-training state by fast-forwarding through train data
-    hope_states = fast_forward_hope(hope, x_train, config, device)
-
-    # Evaluate with persistent state
+    # Evaluate with END-OF-TRAINING state directly (no fast_forward)
     r_persist = evaluate_hope(
-        hope, x_test, y_test, hope_states,
+        hope, x_test, y_test, states,
         chunk_size=config.chunk_size, device=device,
         reset_state=False,
     )
 
     # Evaluate with reset state
     r_reset = evaluate_hope(
-        hope, x_test, y_test, hope_states,
+        hope, x_test, y_test, states,
         chunk_size=config.chunk_size, device=device,
         reset_state=True,
     )
@@ -297,7 +270,7 @@ def main():
     gate1 = mean_hope > mean_lstm
     gate2 = mean_delta > 0
     gate3 = (std_hope / (abs(mean_hope) + 1e-8)) < 0.3
-    gate4 = mem_wins >= 2
+    gate4 = mem_wins >= 3
     gate5 = w_unique
 
     checks = [
@@ -309,8 +282,8 @@ def main():
          f"{'✅ PASS' if gate3 else '❌ FAIL'} "
          f"(ratio={'inf' if abs(mean_hope) < 1e-8 else f'{std_hope/abs(mean_hope):.2f}'}"
          f", need <0.3)"),
-        (gate4, f"Memory helps >=2/{len(args.seeds)} seeds?",
-         f"{'✅ PASS' if gate4 else '❌ FAIL'} ({mem_wins}/{len(args.seeds)})"),
+        (gate4, "Memory helps >=3/5 seeds?",
+         f"{'✅ PASS' if gate4 else '❌ FAIL'} ({mem_wins}/5)"),
         (gate5, "W_norm varies across seeds?",
          f"{'✅ PASS' if gate5 else '❌ FAIL'} ({[round(w, 2) for w in w_norms]})"),
     ]

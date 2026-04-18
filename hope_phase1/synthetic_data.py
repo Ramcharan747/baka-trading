@@ -20,7 +20,7 @@ def generate_frequency_shifting_sine(
     seed: int = 42,
     noise_std: float = 0.05,
     drift_rate: float = 0.0001,
-    jump_prob: float = 0.001,
+    jump_prob: float = 0.003,
     jump_std: float = 0.05,
     freq_min: float = 0.01,
     freq_max: float = 0.5,

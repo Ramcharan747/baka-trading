@@ -64,24 +64,19 @@ def train_epoch_hope(
     device: str = "cuda",
     loss_fn: str = "mse",
     scheduler=None,
-) -> float:
+    states=None,
+) -> tuple:
     """
     Train HOPE on FULL sequence as one continuous stream.
 
     Never resets state. Never shuffles. Exactly mirrors inference.
 
     Args:
-        model:      MiniHOPE instance
-        x_train:    [T] float array — full training sequence
-        y_train:    [T] float array — targets for every step
-        optimizer:  AdamW optimizer for outer loop params
-        chunk_size: TBPTT chunk size (= Titans update frequency)
-        device:     cuda or cpu
-        loss_fn:    "mse" or "ic"
-        scheduler:  Optional LR scheduler (stepped per chunk)
+        states:  If provided, continue from this state (persists across epochs).
+                 If None, initialize fresh.
 
     Returns:
-        Mean loss over all chunks
+        (mean_loss, states) — states can be passed to next epoch or evaluate
     """
     model.train()
     loss_func = mse_loss if loss_fn == "mse" else ic_loss
@@ -89,8 +84,9 @@ def train_epoch_hope(
     T = len(x_train)
     n_chunks = T // chunk_size
 
-    # Initialize state ONCE per epoch
-    states = model.init_state(batch_size=1, device=torch.device(device))
+    # Use provided states or initialize fresh
+    if states is None:
+        states = model.init_state(batch_size=1, device=torch.device(device))
 
     # Reset CMS gradient buffers
     model.reset_cms_buffers()
@@ -137,7 +133,7 @@ def train_epoch_hope(
         total_loss += loss.item()
         step += chunk_size
 
-    return total_loss / max(n_chunks, 1)
+    return total_loss / max(n_chunks, 1), states
 
 
 @torch.no_grad()

@@ -112,10 +112,6 @@ class SelfReferentialTitans(nn.Module):
         B, C, D = x_chunk.shape
         outputs = []
 
-        # Fix 3: verify state format on first call
-        if state["step"] == 0:
-            print(f"  M_mem shape: {state['M_mem'][0].shape}, norm: {state['M_mem'][0].norm():.4f}")
-
         for t in range(C):
             x_t = x_chunk[:, t, :]  # [B, D]
 
