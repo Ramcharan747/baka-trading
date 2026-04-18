@@ -134,10 +134,16 @@ def prepare_dataset(symbols: dict, token: str = None,
             labels.to_frame('label').to_parquet(label_file)
             print(f"    {len(features)} valid bars saved")
 
-        # Run IC test
-        print(f"  {symbol}: IC test...")
-        good_features = ic_test(features, labels, min_ic=0.003)
-        features = features[good_features]
+        # Run IC test (diagnostic only — keep all features)
+        # With ~1100 daily bars, per-stock IC filtering is too aggressive.
+        # The intersection across 8 stocks would be empty.
+        print(f"  {symbol}: IC test (diagnostic)...")
+        ic_test(features, labels, min_ic=0.003)
+
+        # Drop time_sin/time_cos if constant (daily data has no intraday time)
+        for col in ['time_sin', 'time_cos']:
+            if col in features.columns and features[col].nunique() <= 1:
+                features = features.drop(columns=[col])
 
         dataset[symbol] = (features, labels)
 

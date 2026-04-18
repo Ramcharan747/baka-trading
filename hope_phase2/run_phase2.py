@@ -63,10 +63,15 @@ def main():
     args = parse_args()
     device = args.device
 
+    # Read tokens from args or environment
+    import os
+    upstox_token = args.token or os.environ.get('UPSTOX_TOKEN')
+    hf_token = args.hf_token or os.environ.get('HF_TOKEN')
+
     # Setup HuggingFace
-    if args.hf_token:
+    if hf_token:
         from huggingface_hub import login
-        login(token=args.hf_token)
+        login(token=hf_token)
 
     print("=" * 70)
     print("  HOPE Phase 2: Financial Data Training")
@@ -76,7 +81,7 @@ def main():
     # ── STEP 1: Data ─────────────────────────────────────────────────
     print("\n[1/4] Loading data...")
     t0 = time.time()
-    dataset = prepare_dataset(INSTRUMENTS, token=args.token)
+    dataset = prepare_dataset(INSTRUMENTS, token=upstox_token)
     feat_tensor, lab_tensor, val_data, test_data, common_features = \
         build_training_batches(dataset)
 

@@ -49,26 +49,32 @@ def save_checkpoint(model, optimizer, states, epoch, step, metrics,
     torch.save(checkpoint, ckpt_file)
     print(f"  Saved local checkpoint: {ckpt_file}")
 
-    # Upload to HuggingFace
-    api = HfApi()
-    api.upload_file(
-        path_or_fileobj=ckpt_file,
-        path_in_repo=f"checkpoints/checkpoint_epoch{epoch:03d}.pt",
-        repo_id=HF_REPO_ID,
-        repo_type="model",
-    )
+    # Upload to HuggingFace (auto-create repo if needed)
+    try:
+        api = HfApi()
+        api.create_repo(repo_id=HF_REPO_ID, repo_type="model",
+                        exist_ok=True, private=False)
 
-    # Also save a "latest" pointer for easy resume
-    latest = {"epoch": epoch, "step": step, "metrics": metrics}
-    with open(f"{local_path}/latest.json", "w") as fp:
-        json.dump(latest, fp)
-    api.upload_file(
-        path_or_fileobj=f"{local_path}/latest.json",
-        path_in_repo="checkpoints/latest.json",
-        repo_id=HF_REPO_ID,
-        repo_type="model",
-    )
-    print(f"  Uploaded to HF: {HF_REPO_ID}/checkpoints/checkpoint_epoch{epoch:03d}.pt")
+        api.upload_file(
+            path_or_fileobj=ckpt_file,
+            path_in_repo=f"checkpoints/checkpoint_epoch{epoch:03d}.pt",
+            repo_id=HF_REPO_ID,
+            repo_type="model",
+        )
+
+        # Also save a "latest" pointer for easy resume
+        latest = {"epoch": epoch, "step": step, "metrics": metrics}
+        with open(f"{local_path}/latest.json", "w") as fp:
+            json.dump(latest, fp)
+        api.upload_file(
+            path_or_fileobj=f"{local_path}/latest.json",
+            path_in_repo="checkpoints/latest.json",
+            repo_id=HF_REPO_ID,
+            repo_type="model",
+        )
+        print(f"  Uploaded to HF: {HF_REPO_ID}/checkpoints/checkpoint_epoch{epoch:03d}.pt")
+    except Exception as e:
+        print(f"  ⚠️  HF upload failed ({e}), checkpoint saved locally only")
 
 
 def load_checkpoint(model, optimizer, device="cpu",
