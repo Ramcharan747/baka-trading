@@ -47,6 +47,12 @@ def save_checkpoint(model, optimizer, states, epoch, step, metrics,
 
     ckpt_file = f"{local_path}/checkpoint_epoch{epoch:03d}.pt"
     torch.save(checkpoint, ckpt_file)
+    
+    # Always save a "latest" pointer for easy local resume
+    latest = {"epoch": epoch, "step": step, "metrics": metrics}
+    with open(f"{local_path}/latest.json", "w") as fp:
+        json.dump(latest, fp)
+        
     print(f"  Saved local checkpoint: {ckpt_file}")
 
     # Upload to HuggingFace (auto-create repo if needed)
@@ -61,11 +67,6 @@ def save_checkpoint(model, optimizer, states, epoch, step, metrics,
             repo_id=HF_REPO_ID,
             repo_type="model",
         )
-
-        # Also save a "latest" pointer for easy resume
-        latest = {"epoch": epoch, "step": step, "metrics": metrics}
-        with open(f"{local_path}/latest.json", "w") as fp:
-            json.dump(latest, fp)
         api.upload_file(
             path_or_fileobj=f"{local_path}/latest.json",
             path_in_repo="checkpoints/latest.json",
