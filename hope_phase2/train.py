@@ -75,7 +75,7 @@ def train_epoch_finance(model, feat_tensor, lab_tensor,
         e = s + chunk_size
 
         # Accumulate loss across all stocks for this chunk
-        chunk_loss = torch.tensor(0.0, device=device, requires_grad=True)
+        losses = []
 
         new_stock_states = []
         for stock_idx in range(n_stocks):
@@ -92,12 +92,12 @@ def train_epoch_finance(model, feat_tensor, lab_tensor,
 
             # IC loss for this stock
             stock_loss = ic_loss(pred, y_chunk)
-            chunk_loss = chunk_loss + stock_loss
+            losses.append(stock_loss)
 
             new_stock_states.append(stock_state)
 
         # Average loss across stocks
-        chunk_loss = chunk_loss / n_stocks
+        chunk_loss = torch.stack(losses).mean()
 
         # Backward
         optimizer.zero_grad()

@@ -136,7 +136,6 @@ class MiniHOPE(nn.Module):
             self.input_proj = nn.Linear(config.n_features, d)
         else:
             self.input_proj = nn.Sequential(
-                nn.LayerNorm(config.n_features),
                 nn.Linear(config.n_features, d),
                 nn.SiLU(),
             )
