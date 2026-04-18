@@ -33,7 +33,7 @@ INSTRUMENTS = {
 
 
 def download_daily(symbol: str, instrument_key: str, token: str = None,
-                   from_date: str = "2020-01-01") -> pd.DataFrame:
+                   from_date: str = "2010-01-01") -> pd.DataFrame:
     """
     Download daily OHLCV from Upstox V2 API.
     Paginates in 1-year chunks (API limit per request).
