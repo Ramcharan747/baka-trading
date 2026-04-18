@@ -1,156 +1,332 @@
-# BAKA Trading — Multi-Timescale Neural Network for NSE
+<p align="center">
+  <h1 align="center">HOPE — Hierarchical Online Persistent Encoding</h1>
+  <p align="center">
+    <em>A novel streaming neural architecture for financial time series prediction</em>
+  </p>
+  <p align="center">
+    Based on the <a href="https://arxiv.org/abs/2505.xxxxx">Nested Learning</a> paper (NeurIPS 2025) — Self-Referential Titans + Continuum Memory System
+  </p>
+  <p align="center">
+    <strong>Ram Charan</strong> · 2nd Year PIE · IIT Delhi
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/Phase_1-✅_Passed-brightgreen?style=flat-square" alt="Phase 1">
+    <img src="https://img.shields.io/badge/Phase_2-🔄_In_Progress-yellow?style=flat-square" alt="Phase 2">
+    <img src="https://img.shields.io/badge/PyTorch-2.0+-red?style=flat-square&logo=pytorch" alt="PyTorch">
+    <img src="https://img.shields.io/badge/Platform-Colab_T4-blue?style=flat-square&logo=googlecolab" alt="Colab">
+  </p>
+</p>
 
-Research codebase for testing whether a novel multi-timescale memory
-architecture (BAKA — Titans short-term memory + 4-level CMS long-term
-memory) outperforms LSTM and Mamba-style baselines on Indian equity
-intraday data.
+---
 
-> **Status:** Stage 1 (Colab-scale proof of concept) — pipeline
-> end-to-end, awaiting minute-bar data for the real comparison.
+## 📋 Table of Contents
 
-## Quick links
+- [What is HOPE?](#-what-is-hope)
+- [Architecture](#-architecture)
+- [Phase 1 Results](#-phase-1-results--synthetic-validation)
+- [Phase 2: Financial Data](#-phase-2-financial-data)
+- [Repository Structure](#-repository-structure)
+- [Quick Start](#-quick-start)
+- [Design Principles](#-design-principles)
+- [Hardware & Infrastructure](#-hardware--infrastructure)
+- [Citation](#-citation)
 
-- **Research gap & baselines:** [RESEARCH.md](./RESEARCH.md)
-- **Colab / Kaggle / IITD HPC setup:** [SETUP.md](./SETUP.md)
+---
 
-## What this repo contains
+## 🧠 What is HOPE?
 
-| File | What it does |
-|------|-------------|
-| `data_download.py` | Pulls NSE data via yfinance / nsepy / Zerodha Kite, caches to parquet |
-| `kaggle_loader.py` | Loads Kaggle Nifty 500 dataset (`_minute.csv` files), computes indicators |
-| `features.py` | 11-13 **stationary** features (returns, vol, momentum, range, time-of-day) |
-| `ic_test.py` | Information Coefficient test, lookahead-bias guard, regime-conditioned IC |
-| `models.py` | Mini-BAKA (Titans + 4-level CMS + causal attention, ~36K params) + LSTM baseline |
-| `train.py` | Sequential walk-forward training — **no shuffling**, IC/Sharpe loss |
-| `paper_trading.py` | `PaperTradingSimulator` with costs, slippage, stops, position caps |
-| `run_experiment.py` | Master orchestrator — download → features → IC → train → paper trade |
-| `colab_cells.py` | Ready-to-use Colab notebook cells |
+**HOPE** (Hierarchical Online Persistent Encoding) is a streaming neural architecture that maintains **persistent memory** across arbitrary sequence lengths. Unlike transformers (fixed context window) or LSTMs (lossy compression), HOPE uses:
 
-## The rules this codebase is built around
+1. **Self-Referential Titans** — Fast-weight memory matrices updated via **Delta Gradient Descent** (DGD). Every component generates its own training targets, making it truly self-referential (Schmidhuber 1993).
 
-These come from hard-won experience in financial ML. Violate any of them
-and your backtest Sharpe will look amazing while live performance is zero.
+2. **Continuum Memory System** (CMS) — Multi-timescale persistent summaries. Different layers update at different frequencies, capturing patterns from microstructure noise to regime changes.
 
-1. **Never predict raw price.** Always predict returns. Price is
-   non-stationary; a model predicting price learns "yesterday's price" and
-   achieves tiny MSE while being useless.
-2. **Never shuffle financial data.** Walk-forward splits only. Shuffling
-   destroys the temporal continuity that BAKA's memory depends on.
-3. **Always include transaction costs in labels.** 3 bps round-trip for
-   NSE. Without costs, models find tiny edges eaten entirely by spread.
-4. **Always test for lookahead bias.** Any feature with |IC| > 0.3 is
-   almost certainly using future data — the pipeline raises on this.
-5. **Walk-forward validation always.** Train on months 1–6, test on 7.
-   Then train on 1–7, test on 8. Never test on data the model saw.
+The key insight: the **inner loop** (DGD) learns per-token adaptations inside `torch.no_grad()`, while the **outer loop** (AdamW) learns the projection networks that feed the inner loop. This separation means HOPE can adapt in-context without gradient explosion.
 
-## Dataset: Kaggle Nifty 500
+### Why HOPE for Finance?
 
-This repo uses the [Nifty 500 intraday dataset](https://www.kaggle.com/datasets/debashis74017/algo-trading-data-nifty-100-data-with-indicators) from Kaggle:
+| Property | LSTM | Transformer | **HOPE** |
+|----------|------|-------------|----------|
+| Context length | Fixed (hidden state compresses) | Fixed (context window) | **Infinite** (persistent memory) |
+| Adaptation speed | Slow (requires backprop) | None (static weights) | **Per-token** (DGD updates) |
+| Memory cost | O(1) | O(n²) | **O(d²)** per memory matrix |
+| Regime detection | Poor (forgets old regimes) | Can't see past window | **Accumulates** regime history |
 
-- **500+ symbols**, one CSV per symbol (named `{SYMBOL}_minute.csv`)
-- **1-minute bars** from 2015 to 2026 (updated weekly)
-- **6 columns**: `date, open, high, low, close, volume`
-- **No pre-computed indicators** — despite the dataset name. We compute RSI, MACD, EMA, Bollinger Bands, ATR, and OBV in `kaggle_loader.compute_indicators()`
+---
 
-## Quickstart — auto-download from Kaggle
+## 🏗 Architecture
+
+```
+Input x_t ─→ Linear Projection ─→ ┌──────────────────────┐
+                                   │     HOPE Block ×N     │
+                                   │                      │
+                                   │  ┌─ Self-Ref Titans ─┐│
+                                   │  │  M_k(x) → keys    ││
+                                   │  │  M_v(x) → values  ││
+                                   │  │  M_η(x) → LR      ││
+                                   │  │  M_α(x) → decay   ││
+                                   │  │  W_q(x) → query   ││
+                                   │  │                    ││
+                                   │  │  M_mem: fast-weight││
+                                   │  │  DGD update (Eq 93)││
+                                   │  │  [torch.no_grad()] ││
+                                   │  └────────────────────┘│
+                                   │           ↓            │
+                                   │      LayerNorm         │
+                                   │           ↓            │
+                                   │  ┌─ CMS Stack ────────┐│
+                                   │  │  Level 0: 5-step   ││
+                                   │  │  Level 1: 21-step  ││
+                                   │  │  Level 2: 63-step  ││
+                                   │  └────────────────────┘│
+                                   └──────────────────────┘
+                                            ↓
+                               LayerNorm ─→ Linear ─→ ŷ_t
+```
+
+### DGD Update Rule (Eq 93)
+
+```
+M_□,t = M_□,t-1 · (α_t·I − η_t·k_t·k_tᵀ) − η_t · error_t · k_tᵀ
+```
+
+Where `error_t = M_□·k_t − v̂_□,t` and `v̂` is the self-referential target.
+
+**Critical design**: DGD runs inside `torch.no_grad()` — memory matrices are NOT in the outer autograd graph. The projection networks (M_k_net, M_v_net) get gradients through the output path: `combined = o_t + v_t + k_t`.
+
+---
+
+## ✅ Phase 1 Results — Synthetic Validation
+
+**Task**: Predict a frequency-shifting sine wave with 60+ sudden jumps in 20K steps.
+This specifically tests whether persistent memory helps detect and track frequency changes.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| d_model | 24 |
+| Parameters (HOPE) | ~13K |
+| Parameters (LSTM) | ~9.6K |
+| Training steps | 20,000 |
+| Chunk size | 64 |
+| Epochs | 10 |
+| Seeds | 5 (42, 123, 456, 789, 2024) |
+| Freq jumps | ~60 (jump_prob=0.003) |
+
+### Results
+
+```
+======================================================================
+  PHASE 1 RESULTS
+======================================================================
+
+  Model                  mean IC_p     std IC_p    mean IC_r      mean Δ    mem helps
+  ──────────────────────────────────────────────────────────────────────────────
+  HOPE-persistent         +0.9488       0.0186      +0.9375      +0.0113     4/5
+  LSTM-persistent         +0.9362       0.0214
+
+  GATE CHECK:
+  ✅ Gate 1: HOPE IC > LSTM IC         (+0.0126)
+  ✅ Gate 2: HOPE persistent > reset   (delta=+0.0113)
+  ✅ Gate 3: Std/|Mean| < 0.3          (ratio=0.02)
+  ✅ Gate 4: Memory helps ≥3/5 seeds   (4/5)
+  ✅ Gate 5: W_norm varies by seed     ✓
+
+  ✅ PHASE 1 PASSED — proceed to Phase 2
+```
+
+### Key Insights from Phase 1
+
+1. **Memory matters**: IC_persistent > IC_reset in 4/5 seeds (delta = +0.0113). The persistent Titans memory accumulates frequency history that helps prediction.
+
+2. **DGD is firing**: W_norm varies across seeds, confirming that the inner loop adapts differently based on training dynamics.
+
+3. **Output path gradient fix was critical**: Adding `k_t` and `v_t` directly to the output (`combined = o_t + v_t + k_t`) gave M_k_net and M_v_net gradient paths to the loss. Without this, projections received near-zero gradients.
+
+4. **Alpha clamping prevents collapse**: Constraining α to (0.9, 0.99) prevents M_mem from decaying to zero. The norm floor (`if norm < 0.05: add 0.1·I`) provides a safety net.
+
+5. **States must persist across epochs**: Previously, states were reinitialized each epoch, destroying accumulated memory. Passing states through `train_epoch → next epoch` was the fix that unlocked persistent memory.
+
+---
+
+## 📈 Phase 2: Financial Data
+
+**Status**: 🔄 In Progress
+
+### Data Pipeline
+
+8 NSE stocks via Upstox API → 25 stationary features → IC filtering → multi-stock training
+
+**Instruments**: COALINDIA, RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK, SBIN, WIPRO
+
+### Feature Groups (25 Features)
+
+| Group | Features | Signal |
+|-------|----------|--------|
+| **Returns** (5) | ret_1, ret_5, ret_15, ret_30, gap | Momentum at multiple horizons |
+| **Volatility** (4) | rvol_10, rvol_30, atr_ratio, vol_ratio | Regime detection (breakout vs mean-reversion) |
+| **Volume** (4) | vol_surprise, vol_trend, pv_corr, log_vol | Institutional activity detection |
+| **VWAP** (4) | vwap_dev, vwap_zscore, vwap_slope, vwap_band | Institutional benchmark deviation |
+| **Microstructure** (4) | body_ratio, buy_pressure, close_position, illiquidity | Order flow inference from OHLCV |
+| **Momentum** (4) | rsi, sma_dev, range_pos_60, time_sin/cos | Mean reversion + time-of-day seasonality |
+
+Every feature is **stationary** (returns/ratios/z-scores), **normalized**, and **causal** (no future data).
+
+### Phase 2 Configuration
+
+```python
+HopeConfig(
+    n_features  = 25,       # after IC filtering
+    d_model     = 24,
+    n_layers    = 2,        # more capacity for financial data
+    cms_schedule = [5, 21, 63],  # 1 week / 1 month / 1 quarter
+    chunk_size  = 64,
+)
+```
+
+### Phase 2 Gates
+
+- **Gate 1**: Mean test IC > 0.01 across all stocks
+- **Gate 2**: >50% of stocks have positive IC
+- **Gate 3**: Best validation IC > 0.005
+
+---
+
+## 📁 Repository Structure
+
+```
+baka-trading/
+│
+├── hope_phase1/                    # ✅ Phase 1: Synthetic validation
+│   ├── models/                     # Core architecture (DO NOT MODIFY)
+│   │   ├── memory.py              # MemoryModule: M(x) = x + W₁σ(W₂x)
+│   │   ├── titans.py              # Self-Referential Titans + DGD
+│   │   ├── cms.py                 # Continuum Memory System
+│   │   ├── hope.py                # HOPEBlock + MiniHOPE wrapper
+│   │   └── lstm_baseline.py       # LSTM for fair comparison
+│   ├── synthetic_data.py          # Frequency-shifting sine generator
+│   ├── train.py                   # Streaming training (TBPTT)
+│   ├── losses.py                  # IC loss + MSE loss
+│   ├── diagnostics.py             # Gradient/state health checks
+│   └── run_phase1.py              # Complete Phase 1 experiment
+│
+├── hope_phase2/                    # 🔄 Phase 2: Financial data
+│   ├── models/                    # Exact copy from Phase 1
+│   ├── features.py                # 25 quant features
+│   ├── labels.py                  # Forward net return labels
+│   ├── ic_test.py                 # Feature IC filtering
+│   ├── data.py                    # Upstox API → parquet → tensors
+│   ├── checkpoint.py              # HuggingFace Hub save/load
+│   ├── train.py                   # Multi-stock streaming training
+│   ├── evaluate.py                # Walk-forward validation
+│   └── run_phase2.py              # Complete Phase 2 experiment
+│
+├── phase1_synthetic/               # 🗄 Legacy (original BAKA experiments)
+├── README.md
+├── RESEARCH.md
+├── SETUP.md
+└── .gitignore
+```
+
+---
+
+## 🚀 Quick Start
+
+### Phase 1: Validate Architecture (Colab T4)
 
 ```bash
+git clone https://github.com/Ramcharan747/baka-trading.git
+cd baka-trading/hope_phase1
+pip install torch numpy scipy
+python run_phase1.py --device cuda --epochs 10
+```
+
+### Phase 2: Financial Data (Colab T4)
+
+```bash
+cd baka-trading/hope_phase2
 pip install -r requirements.txt
 
-# Auto-download the dataset and train (downloads ~4 GB):
-python run_experiment.py \
-    --source kaggle --kaggle-download \
-    --symbol COALINDIA --start 2024-01-01 --end 2024-12-31 \
-    --model lstm --use-kaggle-indicators \
-    --window 60 --batch-size 128 --epochs 3
+# First run
+python run_phase2.py --device cuda --epochs 10
+
+# Resume after Colab session restart
+python run_phase2.py --device cuda --epochs 10 --resume
 ```
 
-## Quickstart — with local dataset
+### Colab Cells (Copy-Paste Ready)
 
-```bash
-# If you already have the dataset downloaded:
-python run_experiment.py \
-    --source kaggle --kaggle-path /path/to/dataset \
-    --symbol COALINDIA --start 2020-01-01 --end 2024-12-31 \
-    --model baka --use-kaggle-indicators \
-    --window 60 --batch-size 128 --epochs 5
+```python
+# Cell 1: Setup
+!pip install -q huggingface_hub scipy pyarrow
+!rm -rf baka-trading
+!git clone https://github.com/Ramcharan747/baka-trading.git
+
+# Cell 2: Phase 1
+%cd /content/baka-trading/hope_phase1
+!python run_phase1.py --device cuda
+
+# Cell 3: Phase 2
+%cd /content/baka-trading/hope_phase2
+!python run_phase2.py --device cuda --epochs 10
 ```
 
-`--use-kaggle-indicators` computes and merges technical indicators
-(RSI-14, MACD, EMA20, Bollinger, ATR-14, OBV) into the feature set on
-top of the base stationary features.
+---
 
-## Quickstart — NIFTY daily via yfinance
+## 🔒 Design Principles
 
-```bash
-python run_experiment.py \
-    --symbol NIFTY --start 2022-01-01 --end 2024-12-31 \
-    --interval 1d --model lstm \
-    --window 20 --batch-size 32 --epochs 3
+These are **non-negotiable** constraints. Violating any one produces backtests that look great but fail live.
+
+| # | Principle | Why |
+|---|-----------|-----|
+| 1 | **Never predict raw price** | Price is non-stationary. Predict signed returns. |
+| 2 | **Never shuffle time series** | Walk-forward splits only. Shuffling leaks future information. |
+| 3 | **Always subtract transaction costs from labels** | 3 bps for NSE. Without costs, models find edges eaten by spread. |
+| 4 | **Test for lookahead bias** | Any feature with \|IC\| > 0.3 is almost certainly using future data. |
+| 5 | **DGD stays inside `torch.no_grad()`** | Memory matrices are inner loop, NOT nn.Parameters. |
+| 6 | **States persist across epochs** | Reinitializing states kills accumulated memory. |
+| 7 | **Every feature must be causal** | Only `shift(+n)` allowed for features. Labels use `shift(-n)`. |
+
+---
+
+## 🖥 Hardware & Infrastructure
+
+| Stage | Hardware | Use |
+|-------|----------|-----|
+| Phase 1 | Google Colab T4 (16 GB) | Architecture validation on synthetic data |
+| Phase 2 | Google Colab T4 / Kaggle P100 | Financial data training + HF checkpointing |
+| Phase 3 | IIT Delhi HPC — 2×A100 40GB | Full-scale training + live paper trading |
+
+**HPC Details**: PBS scheduler (not SLURM), project `futurematlab1.npn`.
+
+**Checkpointing**: All checkpoints saved to [HuggingFace Hub](https://huggingface.co/Ramcharan747/hope-finance) so training survives Colab session restarts.
+
+---
+
+## 📄 Citation
+
+If you use this code, please cite the underlying paper:
+
+```bibtex
+@inproceedings{behrouz2025nested,
+  title     = {Nested Learning: The Illusion of Deep Learning Architecture},
+  author    = {Behrouz, Ali and Razaviyayn, Meisam and Zhong, Kai},
+  booktitle = {NeurIPS},
+  year      = {2025}
+}
 ```
 
-## CMS ablation — the paper's central experiment
+---
 
-```bash
-for level in -1 0 1 2 3; do
-    python run_experiment.py \
-        --source kaggle --kaggle-path /path/to/dataset \
-        --symbol COALINDIA --start 2020-01-01 --end 2024-12-31 \
-        --model baka --cms-ablate $level --use-kaggle-indicators \
-        --window 60 --batch-size 128 --epochs 10
-done
-```
+## 📬 Contact
 
-`--cms-ablate -1` = no ablation (full BAKA). `--cms-ablate 3` zeros the
-slowest level (65,536-step update). If BAKA's long-memory story holds,
-removing level 3 should degrade IC at regime transitions.
+**Ram Charan** — 2nd Year, Production & Industrial Engineering, IIT Delhi
 
-## Model sizing guidance
+- GitHub: [@Ramcharan747](https://github.com/Ramcharan747)
 
-Financial data has much lower information density than language. A 300M
-param model on 2 years of minute bars will memorize training data
-completely.
+---
 
-- **Stage 1 (Colab T4):** 10K–50K params → Mini-BAKA default (~36K)
-- **Stage 2 (Kaggle P100):** 50K–200K params → `d_model=64, n_layers=3`
-- **Stage 3 (IITD HPC A100):** 200K–1M params → `d_model=128, n_layers=4`
-
-## Success gates at each stage
-
-### Stage 1 — before moving to Stage 2
-- [ ] 3+ features with |IC| > 0.02 and p < 0.05 on NSE data
-- [ ] Zero lookahead bias confirmed
-- [ ] LSTM baseline trains without error; OOS IC > 0.01
-
-### Stage 2 — before moving to Stage 3
-- [ ] Mini-BAKA IC significantly higher than LSTM (t-test p < 0.05)
-- [ ] CMS ablation: removing level-3 hurts IC
-- [ ] IC positive in 2+ of 3 regimes (bull / bear / high-vol)
-- [ ] Walk-forward IC positive in > 60% of periods
-
-### Stage 3 — before any live trading
-- [ ] Paper trading Sharpe > 1.0 over 1 month on unseen data
-- [ ] Max drawdown < 15%
-- [ ] Win rate > 45% (with avg win > avg loss)
-- [ ] IC stable week-over-week in paper trading
-
-## Citation-worthy architecture detail
-
-Mini-BAKA adds two residual summary streams on top of a standard
-causal-attention transformer:
-
-- **Titans fast weights** — a small MLP whose bias vector is updated
-  by one DGD gradient step every `titans_chunk` tokens. Captures
-  intraday surprise.
-- **CMS stack** — 4 EMA-style summaries running at periods
-  `[16, 256, 4096, 65536]` with learning rates
-  `[1e-3, 1e-4, 1e-5, 1e-6]`. Level 0 sees microstructure; level 3
-  persists across days.
-
-Both structures are cleared by `model.reset_memory()` at the start of
-every training epoch and every paper-trading session.
-
-## License / contact
-
-Research code — no license yet. Contact: Ram Charan (2nd year PIE, IIT Delhi).
+<p align="center">
+  <em>Built with 🧠 and ☕ at IIT Delhi</em>
+</p>

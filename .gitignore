@@ -9,14 +9,16 @@ venv/
 .mypy_cache/
 .ipynb_checkpoints/
 
-# Data and artifacts (these can be regenerated)
+# Data and artifacts (regenerated from APIs / training)
 data/
 artifacts/
 *.parquet
 *.pkl
 *.pt
 *.ckpt
+checkpoints/
 logs/
+wandb/
 
 # Credentials — NEVER commit these
 kaggle.json
@@ -24,6 +26,7 @@ kaggle.json
 .env
 *.pem
 *.key
+tokens/
 
 # IDE / OS
 .idea/
@@ -33,3 +36,6 @@ Thumbs.db
 
 # Jupyter
 *.ipynb
+
+# Colab temp
+/content/
