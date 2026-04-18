@@ -39,7 +39,7 @@ VAL_FRAC     = 0.15
 # Training config
 CHUNK_SIZE   = 64
 LR           = 1e-3
-EPOCHS       = 10
+EPOCHS       = 20    # was 10 — BAKA needs more epochs to converge
 
 # Gate thresholds
 IC_ADVANTAGE = 0.01
@@ -56,9 +56,11 @@ def parse_args():
 
 
 def make_baka():
+    # d_model=24 to match LSTM param count (~4.5K)
+    # Previous d_model=16 gave 2,497 params — unfair comparison
     return MiniBAKA(MiniBAKAConfig(
         n_features=1, n_outputs=1,
-        d_model=16, d_ffn=32, dropout=0.0,
+        d_model=24, d_ffn=48, dropout=0.0,
         titans_lr=0.01, titans_clip=0.5,
         cms_schedule=(16, 256, 4096), cms_lr=(1e-2, 1e-3, 1e-4),
     ))
@@ -141,18 +143,24 @@ def run_one_condition(
     # Run diagnostic on first seed of BAKA
     if run_diagnostic and hasattr(model, "titans"):
         diagnose_baka(model, x_train, y_train, device)
-        # Re-create model with same seed for clean training
         torch.manual_seed(seed)
         np.random.seed(seed)
         model = model_factory()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    # Cosine LR schedule: decays from LR to ~0 over all epochs
+    # This helps escape the loss plateau seen at epoch 1
+    n_chunks_per_epoch = len(x_train) // CHUNK_SIZE
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs * n_chunks_per_epoch, eta_min=1e-5
+    )
     trainer = StreamingTrainer(
         model, optimizer,
         chunk_size=CHUNK_SIZE,
         loss_fn="mse",
         device=device,
         log_every=99999,
+        scheduler=scheduler,
     )
 
     # Train

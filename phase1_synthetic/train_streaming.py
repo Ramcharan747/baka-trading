@@ -100,6 +100,7 @@ class StreamingTrainer:
         loss_fn: str = "mse",
         device: str = "cpu",
         log_every: int = 500,
+        scheduler=None,
     ):
         self.model = model.to(device)
         self.optimizer = optimizer
@@ -108,6 +109,7 @@ class StreamingTrainer:
         self.device = torch.device(device)
         self.log_every = log_every
         self.state = None  # persists across chunks within an epoch
+        self.scheduler = scheduler
 
     def train_epoch(
         self,
@@ -164,6 +166,8 @@ class StreamingTrainer:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             total_loss += loss.item()
 
