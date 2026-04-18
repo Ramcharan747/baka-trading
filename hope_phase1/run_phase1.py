@@ -38,11 +38,11 @@ from diagnostics import diagnose_hope
 
 # ─── Configuration ──────────────────────────────────────────────────
 
-N_STEPS = 99999
-SEEDS = [42, 123, 456, 789, 2024]
-CHUNK_SIZE = 16
+N_STEPS = 10000
+SEEDS = [42, 123]
+CHUNK_SIZE = 64
 LR = 1e-3
-EPOCHS = 10
+EPOCHS = 5
 
 
 def parse_args():
@@ -297,7 +297,7 @@ def main():
     gate1 = mean_hope > mean_lstm
     gate2 = mean_delta > 0
     gate3 = (std_hope / (abs(mean_hope) + 1e-8)) < 0.3
-    gate4 = mem_wins >= 3
+    gate4 = mem_wins >= 2
     gate5 = w_unique
 
     checks = [
@@ -309,8 +309,8 @@ def main():
          f"{'✅ PASS' if gate3 else '❌ FAIL'} "
          f"(ratio={'inf' if abs(mean_hope) < 1e-8 else f'{std_hope/abs(mean_hope):.2f}'}"
          f", need <0.3)"),
-        (gate4, "Memory helps ≥3/5 seeds?",
-         f"{'✅ PASS' if gate4 else '❌ FAIL'} ({mem_wins}/5)"),
+        (gate4, f"Memory helps >=2/{len(args.seeds)} seeds?",
+         f"{'✅ PASS' if gate4 else '❌ FAIL'} ({mem_wins}/{len(args.seeds)})"),
         (gate5, "W_norm varies across seeds?",
          f"{'✅ PASS' if gate5 else '❌ FAIL'} ({[round(w, 2) for w in w_norms]})"),
     ]

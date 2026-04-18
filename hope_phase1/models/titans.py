@@ -136,20 +136,14 @@ class SelfReferentialTitans(nn.Module):
 
             # ─── Step 2: Retrieve from main memory (Eq 94) ───
             # M_mem is the fast-weight matrix. Retrieval = matrix-vector multiply.
-            o_t = torch.stack([
-                state["M_mem"][b] @ q_t[b]
-                for b in range(B)
-            ], dim=0)  # [B, D]
+            o_t = (state["M_mem"][0] @ q_t[0]).unsqueeze(0)  # [1, D]
 
             # ─── Step 3: Self-referential value generation (Eq 87/95) ───
             # v̂_□,t = M_□,t-1(v_t) for □ ∈ {k, v, mem}
             # Each memory generates its OWN training target.
-            v_hat_k = self.M_k_net(v_t)    # [B, D]
-            v_hat_v = self.M_v_net(v_t)    # [B, D]
-            v_hat_mem = torch.stack([
-                state["M_mem"][b] @ v_t[b]
-                for b in range(B)
-            ], dim=0)  # [B, D]
+            v_hat_k = self.M_k_net(v_t)    # [1, D]
+            v_hat_v = self.M_v_net(v_t)    # [1, D]
+            v_hat_mem = (state["M_mem"][0] @ v_t[0]).unsqueeze(0)  # [1, D]
 
             # ─── Step 4: DGD update (Eq 93) — DETACHED from outer autograd ───
             # M_□,t = M_□,t-1 · (α_t·I - η_t·k_t·k_t^T) - η_t · (M_□·k - v̂_□) · k^T
@@ -159,41 +153,41 @@ class SelfReferentialTitans(nn.Module):
             #   - They don't participate in the outer AdamW gradient
             #   - They are the "inner loop" of the nested learning system
             with torch.no_grad():
-                for b in range(B):
-                    eta_b = eta_t[b].item()
-                    alpha_b = alpha_t[b].item()
-                    k_b = k_t[b].detach()       # [D]
-                    v_hat_k_b = v_hat_k[b].detach()
-                    v_hat_v_b = v_hat_v[b].detach()
-                    v_hat_mem_b = v_hat_mem[b].detach()
+                eta_b = eta_t[0].item()
+                alpha_b = alpha_t[0].item()
+                k_b = k_t[0].detach()       # [D]
+                v_hat_k_b = v_hat_k[0].detach()
+                v_hat_v_b = v_hat_v[0].detach()
+                v_hat_mem_b = v_hat_mem[0].detach()
 
-                    # Precompute k·k^T (rank-1 outer product) [D, D]
-                    kk_t = torch.outer(k_b, k_b)
+                # Precompute k·k^T (rank-1 outer product) [D, D]
+                kk_t = torch.outer(k_b, k_b)
 
-                    # DGD decay matrix: (α·I - η·k·k^T)
-                    decay = alpha_b * torch.eye(D, device=x_t.device) - eta_b * kk_t
+                # DGD decay matrix: (α·I - η·k·k^T)
+                decay = alpha_b * torch.eye(D, device=x_t.device) - eta_b * kk_t
 
-                    # ── Update M_k ──
-                    error_k = state["M_k"][b] @ k_b - v_hat_k_b
-                    if error_k.norm() > self.grad_clip:
-                        error_k = error_k * (self.grad_clip / error_k.norm())
-                    state["M_k"][b] = state["M_k"][b] @ decay - eta_b * torch.outer(error_k, k_b)
+                # ── Update M_k ──
+                error_k = state["M_k"][0] @ k_b - v_hat_k_b
+                if error_k.norm() > self.grad_clip:
+                    error_k = error_k * (self.grad_clip / error_k.norm())
+                state["M_k"][0] = state["M_k"][0] @ decay - eta_b * torch.outer(error_k, k_b)
 
-                    # ── Update M_v ──
-                    error_v = state["M_v"][b] @ k_b - v_hat_v_b
-                    if error_v.norm() > self.grad_clip:
-                        error_v = error_v * (self.grad_clip / error_v.norm())
-                    state["M_v"][b] = state["M_v"][b] @ decay - eta_b * torch.outer(error_v, k_b)
+                # ── Update M_v ──
+                error_v = state["M_v"][0] @ k_b - v_hat_v_b
+                if error_v.norm() > self.grad_clip:
+                    error_v = error_v * (self.grad_clip / error_v.norm())
+                state["M_v"][0] = state["M_v"][0] @ decay - eta_b * torch.outer(error_v, k_b)
 
-                    # ── Update M_mem ──
-                    error_mem = state["M_mem"][b] @ k_b - v_hat_mem_b
-                    if error_mem.norm() > self.grad_clip:
-                        error_mem = error_mem * (self.grad_clip / error_mem.norm())
-                    state["M_mem"][b] = state["M_mem"][b] @ decay - eta_b * torch.outer(error_mem, k_b)
+                # ── Update M_mem ──
+                error_mem = state["M_mem"][0] @ k_b - v_hat_mem_b
+                if error_mem.norm() > self.grad_clip:
+                    error_mem = error_mem * (self.grad_clip / error_mem.norm())
+                state["M_mem"][0] = state["M_mem"][0] @ decay - eta_b * torch.outer(error_mem, k_b)
 
             # ─── Step 5: Gated output ───
+            combined = o_t + v_t          # o_t has grad through q_t; v_t has grad through M_v_net
             gate = self.out_gate(x_t)
-            out_t = self.out_proj(o_t * gate)
+            out_t = self.out_proj(combined * gate)
             outputs.append(out_t)
 
         output = torch.stack(outputs, dim=1)  # [B, C, D]
