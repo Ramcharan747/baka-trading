@@ -17,20 +17,30 @@ from losses import ic_loss, mse_loss
 
 
 def detach_states(states: list) -> list:
-    """Detach gradient tape from HOPE states (TBPTT)."""
+    """Detach gradient tape from states (TBPTT)."""
+    if states is None:
+        return None
+        
     new_states = []
     for state in states:
-        new_state = {}
-        for k, v in state.items():
-            if k == "step":
-                new_state[k] = v
-            elif isinstance(v, list):
-                new_state[k] = [m.detach().clone() for m in v]
-            elif isinstance(v, torch.Tensor):
-                new_state[k] = v.detach().clone()
-            else:
-                new_state[k] = v
-        new_states.append(new_state)
+        if state is None:
+            new_states.append(None)
+        elif isinstance(state, tuple):
+            # LSTM states: (h, c)
+            new_states.append(tuple(s.detach().clone() for s in state))
+        elif isinstance(state, dict):
+            # HOPE states: dict
+            new_state = {}
+            for k, v in state.items():
+                if k == "step":
+                    new_state[k] = v
+                elif isinstance(v, list):
+                    new_state[k] = [m.detach().clone() for m in v]
+                elif isinstance(v, torch.Tensor):
+                    new_state[k] = v.detach().clone()
+                else:
+                    new_state[k] = v
+            new_states.append(new_state)
     return new_states
 
 
@@ -64,8 +74,9 @@ def train_epoch_finance(model, feat_tensor, lab_tensor,
                 model.init_state(batch_size=1, device=torch.device(device))
             )
 
-    # Reset CMS gradient buffers
-    model.reset_cms_buffers()
+    # Reset CMS gradient buffers (HOPE only)
+    if hasattr(model, 'reset_cms_buffers'):
+        model.reset_cms_buffers()
 
     total_loss = 0.0
     step = 0
@@ -103,8 +114,9 @@ def train_epoch_finance(model, feat_tensor, lab_tensor,
         optimizer.zero_grad()
         chunk_loss.backward()
 
-        # CMS gradient accumulation
-        model.post_backward(step)
+        # CMS gradient accumulation (HOPE only)
+        if hasattr(model, 'post_backward'):
+            model.post_backward(step)
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()

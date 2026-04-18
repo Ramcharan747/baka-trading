@@ -9,6 +9,7 @@ import torch
 from scipy.stats import spearmanr
 
 from train import detach_states
+from backtest import compute_backtest_metrics
 
 
 def walk_forward_evaluation(model, val_data, common_features,
@@ -43,10 +44,13 @@ def walk_forward_evaluation(model, val_data, common_features,
         window = T // max(effective_windows, 1)
 
         if window < eval_chunk_size:
-            results[sym] = {'mean_IC': 0.0, 'positive_windows': 0, 'n_windows': 0}
+            results[sym] = {'mean_IC': 0.0, 'positive_windows': 0, 'n_windows': 0, 'total_pnl': 0.0, 'n_trades': 0, 'win_rate': 0.0}
             continue
 
         ics = []
+        sym_preds = []
+        sym_trues = []
+        
         for w in range(effective_windows - 1):
             train_end = (w + 1) * window
             test_end = min((w + 2) * window, T)
@@ -90,6 +94,8 @@ def walk_forward_evaluation(model, val_data, common_features,
                 ic, p = spearmanr(pred_arr, true_arr)
                 if not np.isnan(ic):
                     ics.append(ic)
+                sym_preds.extend(pred_arr)
+                sym_trues.extend(true_arr)
 
         # If only 1 window, use full val set as test (no warm-up split)
         if effective_windows == 1 and not ics:
@@ -118,11 +124,23 @@ def walk_forward_evaluation(model, val_data, common_features,
                 ic, _ = spearmanr(pred_arr, true_arr)
                 if not np.isnan(ic):
                     ics.append(ic)
+                sym_preds.extend(pred_arr)
+                sym_trues.extend(true_arr)
+
+        if sym_preds:
+            total_pnl, n_trades, win_rate = compute_backtest_metrics(
+                np.array(sym_trues), np.array(sym_preds)
+            )
+        else:
+            total_pnl, n_trades, win_rate = 0.0, 0, 0.0
 
         results[sym] = {
             'mean_IC': np.mean(ics) if ics else 0.0,
             'positive_windows': sum(ic > 0 for ic in ics),
             'n_windows': len(ics),
+            'total_pnl': total_pnl,
+            'n_trades': int(n_trades),
+            'win_rate': win_rate
         }
 
     return results

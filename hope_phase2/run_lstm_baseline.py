@@ -18,50 +18,43 @@ import torch
 
 sys.path.insert(0, ".")
 
-from models.hope import MiniHOPE, HopeConfig
+from hope_phase1.models.hope import HopeConfig
+from hope_phase1.models.lstm_baseline import LSTMBaseline
 from data import INSTRUMENTS, prepare_dataset, build_training_batches
 from train import train_epoch_finance, detach_states
 from evaluate import walk_forward_evaluation
 from checkpoint import save_checkpoint, load_checkpoint
 
 
-# ─── Configuration ──────────────────────────────────────────────────
-
-CHUNK_SIZE = 64
-LR = 1e-3
-EPOCHS = 10
+# ── HYPERPARAMETERS ──────────────────────────────────────────────────────────
+LR = 0.005             # Same as HOPE
+CHUNK_SIZE = 64        # Same sequence length
 
 
 def make_config(n_features: int) -> HopeConfig:
-    """HOPE config for daily financial data."""
+    """LSTM Baseline config for daily financial data."""
     return HopeConfig(
         n_features=n_features,
         d_model=24,
-        n_layers=2,           # 2 layers for finance (more capacity)
+        n_layers=2,           # 2 layers
         n_outputs=1,          # signed return prediction
-        inner_lr=0.01,
-        inner_decay=0.99,
-        grad_clip=1.0,
-        cms_levels=3,
-        cms_schedule=[5, 21, 63],     # 1 week, 1 month, 1 quarter
-        cms_lr=[1e-3, 1e-4, 1e-5],
         chunk_size=CHUNK_SIZE,
     )
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="HOPE Phase 2: Financial Data")
+    p = argparse.ArgumentParser(description="LSTM Baseline Phase 2: Financial Data")
     p.add_argument("--token", default=None, help="Upstox API token")
     p.add_argument("--hf_token", default=None, help="HuggingFace write token")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--epochs", type=int, default=EPOCHS)
-    p.add_argument("--resume", action="store_true", help="Resume from HF checkpoint")
+    p.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    p.add_argument("--resume", action="store_true", help="Resume from local latest.json")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    device = args.device
+    device = torch.device(args.device)
 
     # Read tokens from args or environment
     import os
@@ -77,18 +70,19 @@ def main():
         except Exception as e:
             print(f"  ⚠️  HF login failed ({e}), checkpoints will save locally only")
 
-    print("=" * 70)
-    print("  HOPE Phase 2: Financial Data Training")
+    print("=" * 75)
+    print("  LSTM Baseline: Financial Data Training")
     print(f"  Device: {device}  Epochs: {args.epochs}")
-    print("=" * 70)
+    print("=" * 75)
 
     # ── STEP 1: Data ─────────────────────────────────────────────────
     print("\n[1/4] Loading data...")
     t0 = time.time()
-    dataset = prepare_dataset(INSTRUMENTS, token=upstox_token)
+    dataset = prepare_dataset(INSTRUMENTS, token=upstox_token, cost_bps=3.0)
+
     feat_tensor, lab_tensor, val_data, test_data, common_features = \
         build_training_batches(dataset)
-
+    
     n_stocks, T, n_features = feat_tensor.shape
     print(f"  Stocks: {n_stocks}, Bars: {T}, Features: {n_features}")
     print(f"  Data loaded in {time.time() - t0:.1f}s")
@@ -96,13 +90,16 @@ def main():
     # ── STEP 2: Model ─────────────────────────────────────────────────
     print("\n[2/4] Initializing model...")
     config = make_config(n_features)
-    model = MiniHOPE(config).to(device)
+    model = LSTMBaseline(
+        n_features=config.n_features,
+        hidden_size=config.d_model,
+        n_layers=config.n_layers,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {total_params:,}")
-    print(f"  Config: d_model={config.d_model} n_layers={config.n_layers} "
-          f"cms_schedule={config.cms_schedule}")
+    print(f"  Config: d_model={config.d_model} n_layers={config.n_layers}")
 
     # Resume from checkpoint if requested
     start_epoch = 0
@@ -178,7 +175,7 @@ def main():
     )
 
     print(f"\n{'=' * 75}")
-    print(f"  PHASE 2 FINAL RESULTS (HOPE)")
+    print(f"  PHASE 2 FINAL RESULTS (LSTM BASELINE)")
     print(f"{'=' * 75}")
     for sym, res in sorted(test_results.items()):
         print(f"  {sym:12s}: test_IC={res['mean_IC']:+.4f}  "
