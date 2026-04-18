@@ -68,10 +68,14 @@ def main():
     upstox_token = args.token or os.environ.get('UPSTOX_TOKEN')
     hf_token = args.hf_token or os.environ.get('HF_TOKEN')
 
-    # Setup HuggingFace
+    # Setup HuggingFace (non-fatal — local checkpoints always work)
     if hf_token:
-        from huggingface_hub import login
-        login(token=hf_token)
+        try:
+            from huggingface_hub import login
+            login(token=hf_token)
+            print("  ✅ HuggingFace login OK")
+        except Exception as e:
+            print(f"  ⚠️  HF login failed ({e}), checkpoints will save locally only")
 
     print("=" * 70)
     print("  HOPE Phase 2: Financial Data Training")
