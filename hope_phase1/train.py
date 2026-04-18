@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .losses import ic_loss, mse_loss
+from losses import ic_loss, mse_loss
 
 
 # ─── State management ──────────────────────────────────────────────

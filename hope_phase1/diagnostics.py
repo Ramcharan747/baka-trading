@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .losses import ic_loss
+from losses import ic_loss
 
 
 def diagnose_hope(model: nn.Module, device: str = "cuda"):
