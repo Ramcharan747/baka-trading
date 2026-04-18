@@ -87,27 +87,45 @@ def load_checkpoint(model, optimizer, device="cpu",
 
     # Find latest epoch if not specified
     if epoch is None:
+        latest_local = os.path.join(local_path, "latest.json")
         try:
-            hf_hub_download(
-                repo_id=HF_REPO_ID, repo_type="model",
-                filename="checkpoints/latest.json",
-                local_dir=local_path,
-            )
-            latest_local = os.path.join(local_path, "checkpoints", "latest.json")
-            with open(latest_local) as fp:
-                latest = json.load(fp)
-            epoch = latest['epoch']
+            if os.path.exists(latest_local):
+                with open(latest_local) as fp:
+                    latest = json.load(fp)
+                epoch = latest['epoch']
+                print(f"  [Local] Found latest.json (epoch {epoch})")
+            else:
+                hf_hub_download(
+                    repo_id=HF_REPO_ID, repo_type="model",
+                    filename="checkpoints/latest.json",
+                    local_dir=local_path,
+                )
+                hf_latest = os.path.join(local_path, "checkpoints", "latest.json")
+                with open(hf_latest) as fp:
+                    latest = json.load(fp)
+                epoch = latest['epoch']
+                print(f"  [HF] Found latest.json (epoch {epoch})")
         except Exception:
             print("  No checkpoint found, starting from scratch")
             return model, optimizer, None, 0, 0
 
-    # Download checkpoint
-    ckpt_filename = f"checkpoints/checkpoint_epoch{epoch:03d}.pt"
-    local_file = hf_hub_download(
-        repo_id=HF_REPO_ID, repo_type="model",
-        filename=ckpt_filename,
-        local_dir=local_path,
-    )
+    # Load checkpoint
+    ckpt_filename = f"checkpoint_epoch{epoch:03d}.pt"
+    local_file = os.path.join(local_path, ckpt_filename)
+    
+    if os.path.exists(local_file):
+        print(f"  [Local] Loading {ckpt_filename}")
+    else:
+        try:
+            local_file = hf_hub_download(
+                repo_id=HF_REPO_ID, repo_type="model",
+                filename=f"checkpoints/{ckpt_filename}",
+                local_dir=local_path,
+            )
+            print(f"  [HF] Downloaded {ckpt_filename}")
+        except Exception as e:
+            print(f"  Failed to load {ckpt_filename}: {e}")
+            return model, optimizer, None, 0, 0
 
     checkpoint = torch.load(local_file, map_location=device, weights_only=False)
 
