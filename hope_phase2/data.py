@@ -18,7 +18,7 @@ from features import compute_features
 from labels import compute_labels
 from ic_test import ic_test
 
-UPSTOX_BASE = "https://api.upstox.com/v3/historical-candle"
+UPSTOX_BASE = "https://api.upstox.com/v2/historical-candle"
 
 INSTRUMENTS = {
     'COALINDIA':  'NSE_EQ|INE522F01014',
@@ -33,29 +33,53 @@ INSTRUMENTS = {
 
 
 def download_daily(symbol: str, instrument_key: str, token: str = None,
-                   from_date: str = "2015-01-01") -> pd.DataFrame:
+                   from_date: str = "2020-01-01") -> pd.DataFrame:
     """
-    Download daily OHLCV from Upstox V3 API.
-    Daily data is available from 2000. No auth needed for EOD data.
+    Download daily OHLCV from Upstox V2 API.
+    Paginates in 1-year chunks (API limit per request).
+    No auth needed for daily EOD data.
     """
-    to_date = pd.Timestamp.today().strftime('%Y-%m-%d')
-    url = f"{UPSTOX_BASE}/{instrument_key}/days/1/{to_date}/{from_date}"
+    all_candles = []
+    start = pd.Timestamp(from_date)
+    end = pd.Timestamp.today()
 
-    headers = {'Accept': 'application/json'}
-    if token:
-        headers['Authorization'] = f'Bearer {token}'
+    # Paginate in 1-year chunks
+    while start < end:
+        chunk_end = min(start + pd.DateOffset(years=1), end)
+        from_str = start.strftime('%Y-%m-%d')
+        to_str = chunk_end.strftime('%Y-%m-%d')
 
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        raise ValueError(f"API error {r.status_code} for {symbol}: {r.text[:200]}")
+        url = f"{UPSTOX_BASE}/{instrument_key}/day/{to_str}/{from_str}"
 
-    candles = r.json()['data']['candles']
-    df = pd.DataFrame(candles,
+        headers = {'Accept': 'application/json'}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            print(f"    Warning: API error {r.status_code} for {symbol} "
+                  f"({from_str} to {to_str}), skipping chunk")
+            start = chunk_end
+            continue
+
+        data = r.json().get('data', {})
+        candles = data.get('candles', [])
+        if candles:
+            all_candles.extend(candles)
+            print(f"    {from_str}→{to_str}: {len(candles)} bars")
+
+        start = chunk_end
+
+    if not all_candles:
+        raise ValueError(f"No data downloaded for {symbol}")
+
+    df = pd.DataFrame(all_candles,
                       columns=['timestamp', 'open', 'high', 'low',
                                'close', 'volume', 'oi'])
     df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.drop_duplicates(subset='timestamp')
     df = df.set_index('timestamp').sort_index()
-    df = df[['open', 'high', 'low', 'close', 'volume']]  # drop OI
+    df = df[['open', 'high', 'low', 'close', 'volume']]
     return df
 
 
