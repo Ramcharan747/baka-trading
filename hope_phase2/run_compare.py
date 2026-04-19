@@ -83,36 +83,64 @@ def train_lstm(lstm, feat_tensor, lab_tensor, device, epochs=EPOCHS):
     return lstm
 
 
-def get_predictions(model, test_data, common_features, device,
+def get_predictions(model, train_data, test_data, common_features, device,
                     model_type="hope", chunk_size=CHUNK_SIZE):
-    """Run model on test data and return raw predictions + true labels per stock."""
+    """Run model on test data with warmed-up state and return raw predictions per stock.
+    
+    For HOPE: warm up persistent memory on training data first (critical for DGD).
+    For LSTM: warm up hidden state on training data (less critical but consistent).
+    """
     results = {}
-    for sym, (feat_df, lab_series) in test_data.items():
-        feat = feat_df[common_features].values
-        labs = lab_series.values
-        T = len(feat)
+    eval_chunk = 16
 
-        x = torch.tensor(feat, dtype=torch.float32, device=device).unsqueeze(0)
+    for sym, (test_feat_df, test_lab_series) in test_data.items():
+        test_feat = test_feat_df[common_features].values
+        test_labs = test_lab_series.values
+        T_test = len(test_feat)
 
+        # Get training data for warmup
+        train_feat_df, _ = train_data[sym]
+        train_feat = train_feat_df[common_features].values
+        T_train = len(train_feat)
+
+        x_train = torch.tensor(
+            train_feat, dtype=torch.float32, device=device).unsqueeze(0)
+        x_test = torch.tensor(
+            test_feat, dtype=torch.float32, device=device).unsqueeze(0)
+
+        # Initialize state
         if model_type == "lstm":
             states = None
         else:
             states = model.init_state(1, torch.device(device))
 
         model.eval()
-        all_preds = []
-        eval_chunk = 16
-        n_chunks = T // eval_chunk
         with torch.no_grad():
-            for ci in range(n_chunks):
-                s = ci * eval_chunk
-                e = s + eval_chunk
+            # Phase 1: Warm up state on training data
+            n_warmup = T_train // chunk_size
+            for ci in range(n_warmup):
+                s = ci * chunk_size
+                e = s + chunk_size
                 if model_type == "lstm":
-                    pred, states = model(x[:, s:e, :], states)
+                    _, states = model(x_train[:, s:e, :], states)
                     if states is not None:
                         states = (states[0].detach(), states[1].detach())
                 else:
-                    pred, states = model(x[:, s:e, :], states, step=s)
+                    _, states = model(x_train[:, s:e, :], states, step=s)
+                    states = detach_states(states)
+
+            # Phase 2: Predict on test data using warmed-up state
+            all_preds = []
+            n_test = T_test // eval_chunk
+            for ci in range(n_test):
+                s = ci * eval_chunk
+                e = s + eval_chunk
+                if model_type == "lstm":
+                    pred, states = model(x_test[:, s:e, :], states)
+                    if states is not None:
+                        states = (states[0].detach(), states[1].detach())
+                else:
+                    pred, states = model(x_test[:, s:e, :], states, step=s)
                     states = detach_states(states)
                 pred_np = pred.squeeze().cpu().numpy()
                 if pred_np.ndim == 0:
@@ -120,7 +148,7 @@ def get_predictions(model, test_data, common_features, device,
                 all_preds.extend(pred_np.tolist())
 
         pred_arr = np.array(all_preds)
-        true_arr = labs[:len(pred_arr)]
+        true_arr = test_labs[:len(pred_arr)]
         results[sym] = (pred_arr, true_arr)
 
     return results
@@ -153,6 +181,12 @@ def main():
     n_stocks, T, n_features = feat_tensor.shape
     print(f"  {n_stocks} stocks, {T} bars, {n_features} features")
 
+    # Reconstruct train_data dict for warmup in get_predictions
+    train_data = {}
+    for sym, (feat, lab) in dataset.items():
+        t1 = int(len(feat) * 0.7)
+        train_data[sym] = (feat.iloc[:t1][common_features], lab.iloc[:t1])
+
     # ── HOPE: load from checkpoint, no retraining ─────────────────
     print("\n[2/4] Loading HOPE from checkpoint...")
     hope_config = make_hope_config(n_features)
@@ -184,9 +218,9 @@ def main():
         model_type="lstm")
 
     # Backtest: get raw predictions for trade count / win rate
-    hope_preds = get_predictions(hope, test_data, common_features,
+    hope_preds = get_predictions(hope, train_data, test_data, common_features,
                                  device, model_type="hope")
-    lstm_preds = get_predictions(lstm, test_data, common_features,
+    lstm_preds = get_predictions(lstm, train_data, test_data, common_features,
                                  device, model_type="lstm")
 
     # Print comparison table
