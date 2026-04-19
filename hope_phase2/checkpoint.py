@@ -14,9 +14,9 @@ HF_REPO_ID = "Baka7/hope-finance"
 
 
 def save_checkpoint(model, optimizer, states, epoch, step, metrics,
-                    local_path="/content/checkpoints"):
+                    hf_token=None, local_path="/content/checkpoints"):
     """
-    Save full training state to HuggingFace Hub.
+    Save full training state locally + upload to HuggingFace Hub.
     Call after every epoch.
     """
     os.makedirs(local_path, exist_ok=True)
@@ -47,35 +47,35 @@ def save_checkpoint(model, optimizer, states, epoch, step, metrics,
 
     ckpt_file = f"{local_path}/checkpoint_epoch{epoch:03d}.pt"
     torch.save(checkpoint, ckpt_file)
-    
+
     # Always save a "latest" pointer for easy local resume
     latest = {"epoch": epoch, "step": step, "metrics": metrics}
     with open(f"{local_path}/latest.json", "w") as fp:
         json.dump(latest, fp)
-        
+
     print(f"  Saved local checkpoint: {ckpt_file}")
 
-    # Upload to HuggingFace (auto-create repo if needed)
+    # Upload to HuggingFace Hub (token passed explicitly)
     try:
         api = HfApi()
-        api.create_repo(repo_id=HF_REPO_ID, repo_type="model",
-                        exist_ok=True, private=False)
-
         api.upload_file(
             path_or_fileobj=ckpt_file,
             path_in_repo=f"checkpoints/checkpoint_epoch{epoch:03d}.pt",
             repo_id=HF_REPO_ID,
             repo_type="model",
+            token=hf_token,
         )
         api.upload_file(
             path_or_fileobj=f"{local_path}/latest.json",
             path_in_repo="checkpoints/latest.json",
             repo_id=HF_REPO_ID,
             repo_type="model",
+            token=hf_token,
         )
-        print(f"  Uploaded to HF: {HF_REPO_ID}/checkpoints/checkpoint_epoch{epoch:03d}.pt")
+        print(f"  ✅ Uploaded to HF: epoch {epoch}")
     except Exception as e:
-        print(f"  ⚠️  HF upload failed ({e}), checkpoint saved locally only")
+        print(f"  ⚠️  HF upload failed: {e}")
+        print(f"  Checkpoint saved locally only: {ckpt_file}")
 
 
 def load_checkpoint(model, optimizer, device="cpu",

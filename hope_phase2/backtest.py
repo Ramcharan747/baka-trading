@@ -36,3 +36,7 @@ def compute_backtest_metrics(y_true: np.ndarray, y_pred: np.ndarray, threshold: 
         win_rate = 0.0
         
     return total_pnl, n_trades, win_rate
+
+
+# Alias for backward compatibility
+run_backtest = compute_backtest_metrics

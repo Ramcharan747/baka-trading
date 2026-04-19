@@ -151,8 +151,7 @@ def main():
               f"({elapsed:.1f}s)")
         for sym, res in sorted(val_results.items()):
             print(f"    {sym:12s}: IC={res['mean_IC']:+.4f}  "
-                  f"PnL={res['total_pnl']*100:+.2f}%  "
-                  f"WR={res['win_rate']*100:.1f}% ({res['n_trades']}t)")
+                  f"pos={res['positive_windows']}/{res['n_windows']}")
 
         # Save checkpoint every epoch
         # Use first stock's state as representative for checkpoint
@@ -164,6 +163,7 @@ def main():
                 epoch,
                 epoch * n_chunks_per_epoch,
                 metrics,
+                hf_token=hf_token,
             )
 
         if mean_val_ic > best_val_ic:
@@ -177,27 +177,20 @@ def main():
         chunk_size=CHUNK_SIZE, device=device,
     )
 
-    print(f"\n{'=' * 75}")
-    print(f"  PHASE 2 FINAL RESULTS (HOPE)")
-    print(f"{'=' * 75}")
+    print(f"\n{'=' * 60}")
+    print(f"  PHASE 2 FINAL RESULTS")
+    print(f"{'=' * 60}")
     for sym, res in sorted(test_results.items()):
         print(f"  {sym:12s}: test_IC={res['mean_IC']:+.4f}  "
-              f"PnL={res['total_pnl']*100:+.2f}%  "
-              f"WR={res['win_rate']*100:.1f}% ({res['n_trades']}t)  "
-              f"pos={res['positive_windows']}/{res['n_windows']}")
+              f"positive={res['positive_windows']}/{res['n_windows']}")
 
     mean_test_ic = np.mean([v['mean_IC'] for v in test_results.values()])
-    mean_test_pnl = np.mean([v['total_pnl'] for v in test_results.values()])
-    total_test_trades = sum([v['n_trades'] for v in test_results.values()])
-    
     pos_stocks = sum(
         v['positive_windows'] > v['n_windows'] // 2
         for v in test_results.values()
     )
 
     print(f"\n  Mean test IC:           {mean_test_ic:+.4f}")
-    print(f"  Mean test PnL:          {mean_test_pnl*100:+.2f}%")
-    print(f"  Total test trades:      {total_test_trades}")
     print(f"  Stocks with IC > 0:     {pos_stocks}/{len(test_results)}")
 
     gate1 = mean_test_ic > 0.01
