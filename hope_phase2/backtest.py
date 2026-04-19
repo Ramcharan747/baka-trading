@@ -9,7 +9,7 @@ def compute_backtest_metrics(y_true: np.ndarray, y_pred: np.ndarray, threshold: 
     y_pred: Model prediction.
     threshold: Minimum absolute prediction score to enter a trade.
     
-    Returns: (total_pnl, n_trades, win_rate)
+    Returns: (total_pnl, n_trades, win_rate, sharpe)
     """
     long_trades = y_pred > threshold
     short_trades = y_pred < -threshold
@@ -34,8 +34,19 @@ def compute_backtest_metrics(y_true: np.ndarray, y_pred: np.ndarray, threshold: 
         win_rate = (long_wins + short_wins) / n_trades
     else:
         win_rate = 0.0
+
+    # Sharpe ratio: annualized from per-bar PnL
+    # Build array of per-bar PnL (0 for bars with no trade)
+    daily_pnl = np.zeros(len(y_true))
+    daily_pnl[long_trades] = long_returns
+    daily_pnl[short_trades] = short_returns
+    
+    if daily_pnl.std() > 1e-10:
+        sharpe = (daily_pnl.mean() / daily_pnl.std()) * np.sqrt(252)
+    else:
+        sharpe = 0.0
         
-    return total_pnl, n_trades, win_rate
+    return total_pnl, n_trades, win_rate, sharpe
 
 
 # Alias for backward compatibility
