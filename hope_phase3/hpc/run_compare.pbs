@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -N hope_p3_compare
+#PBS -l select=1:ncpus=16:ngpus=2:mem=64gb:centos=icelake
+#PBS -l walltime=72:00:00
+#PBS -q gpu
+#PBS -P futurematlab1.npn
+#PBS -o logs/hope_p3_compare.out
+#PBS -e logs/hope_p3_compare.err
+
+cd $PBS_O_WORKDIR
+source ~/venv/bin/activate
+cd ~/AGI/baka/hope_phase3
+
+# Loads all HOPE checkpoints from HF, trains LSTM×5, trains LGBM,
+# generates comparison table and all plots.
+python run_compare.py \
+    --mode prod \
+    --hope_seeds 0,42,123,7,99 \
+    --lstm_seeds 0,42,123,7,99 \
+    --device cuda \
+    --epochs 20 \
+    --hf_token $HF_TOKEN \
+    --token $UPSTOX_TOKEN
+
+echo "Comparison done. Run: qstat -answT $PBS_JOBID"

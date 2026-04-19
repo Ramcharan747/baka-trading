@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N hope_p3_s2
+#PBS -l select=1:ncpus=16:ngpus=2:mem=64gb:centos=icelake
+#PBS -l walltime=48:00:00
+#PBS -q gpu
+#PBS -P futurematlab1.npn
+#PBS -o logs/hope_p3_s2.out
+#PBS -e logs/hope_p3_s2.err
+
+cd $PBS_O_WORKDIR
+source ~/venv/bin/activate
+cd ~/AGI/baka/hope_phase3
+
+python run_phase3.py \
+    --seed 123 \
+    --mode prod \
+    --device cuda \
+    --epochs 20 \
+    --hf_token $HF_TOKEN \
+    --token $UPSTOX_TOKEN
+
+echo "Seed 123 done. Run: qstat -answT $PBS_JOBID"
