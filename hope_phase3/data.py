@@ -100,9 +100,15 @@ def download_minute_bars(symbol: str, isin: str, token: str,
     df = df[(hour_min >= 915) & (hour_min <= 1530)].copy()
 
     # Filter: remove zero-volume bars and bad data
-    df = df[df['volume'] > 0].copy()
-    bad_data = (df['high'] == df['low']) & (df['volume'] < 100)
-    df = df[~bad_data].copy()
+    # NOTE: Index instruments (NIFTY50) may have volume=0 — skip volume filter for them
+    is_index = 'INDEX' in isin
+    if not is_index:
+        df = df[df['volume'] > 0].copy()
+        bad_data = (df['high'] == df['low']) & (df['volume'] < 100)
+        df = df[~bad_data].copy()
+    else:
+        # For index, just fill volume with 0 (no filtering)
+        df['volume'] = df['volume'].fillna(0)
 
     df = df.reset_index(drop=True)
     print(f"    {symbol}: {len(df)} valid minute bars")
@@ -131,23 +137,30 @@ def load_all_stocks(instruments: dict, token: str,
     if len(raw_data) < 2:
         raise ValueError(f"Only {len(raw_data)} stocks downloaded — need at least 2")
 
-    # Find common timestamp universe
+    # Find common timestamp universe (exclude NIFTY50 — it's a feature, not a stock)
+    stock_data = {k: v for k, v in raw_data.items() if k != "NIFTY50"}
     all_timestamps = None
-    for sym, df in raw_data.items():
-        ts = set(df['datetime'].values)
+    for sym, df in stock_data.items():
+        ts = set(pd.to_datetime(df['datetime']).values)
         if all_timestamps is None:
             all_timestamps = ts
         else:
             all_timestamps = all_timestamps.intersection(ts)
 
-    common_ts = sorted(all_timestamps)
-    print(f"\n  Common timestamps across {len(raw_data)} stocks: {len(common_ts)}")
+    common_ts = pd.DatetimeIndex(sorted(all_timestamps))
+    print(f"\n  Common timestamps across {len(stock_data)} stocks: {len(common_ts)}")
 
     # Align and forward-fill
     aligned = {}
     dropped = []
     for sym, df in raw_data.items():
-        df_indexed = df.set_index('datetime')
+        # NIFTY50 uses its own timestamps (not forced to stock common_ts)
+        if sym == "NIFTY50":
+            aligned[sym] = df
+            continue
+
+        df_indexed = df.set_index(pd.to_datetime(df['datetime']))
+        df_indexed = df_indexed.drop(columns=['datetime'], errors='ignore')
         df_aligned = df_indexed.reindex(common_ts)
 
         # Forward-fill up to 3 bars for minor gaps
@@ -155,7 +168,7 @@ def load_all_stocks(instruments: dict, token: str,
         df_aligned = df_aligned.ffill(limit=3)
         missing_after = df_aligned['close'].isna().sum()
 
-        pct_missing = missing_after / len(df_aligned)
+        pct_missing = missing_after / len(df_aligned) if len(df_aligned) > 0 else 1.0
         if pct_missing > max_missing_pct:
             print(f"  ⚠️  {sym}: {pct_missing:.1%} missing — DROPPED")
             dropped.append(sym)
@@ -169,7 +182,8 @@ def load_all_stocks(instruments: dict, token: str,
 
     if dropped:
         print(f"  Dropped {len(dropped)} stocks: {dropped}")
-    print(f"  Final: {len(aligned)} stocks, {len(common_ts)} bars each")
+    n_stocks = len([k for k in aligned if k != "NIFTY50"])
+    print(f"  Final: {n_stocks} stocks, {len(common_ts)} bars each")
 
     return aligned
 

@@ -68,6 +68,7 @@ def main():
         if n_stocks < 2:
             print(f"  ❌ Need at least 2 stocks, got {n_stocks}")
             passed = False
+            return
     except Exception as e:
         print(f"  ❌ Data download failed: {e}")
         passed = False
