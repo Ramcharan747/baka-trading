@@ -1,6 +1,6 @@
 """
 Parameter-matched LSTM baseline for Phase 3.
-hidden_size=250, n_layers=4 → ~1.28M params (matches HOPE ~1.26M)
+hidden_size=197, n_layers=4 with input_proj → ~1.26M params (matches HOPE ~1.26M)
 """
 from __future__ import annotations
 

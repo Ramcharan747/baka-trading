@@ -38,7 +38,7 @@ class PhaseConfig:
     chunk_size: int = 64
 
     # ── LSTM (matched params) ─────────────────────────────────────
-    lstm_hidden: int = 250
+    lstm_hidden: int = 197
     lstm_layers: int = 4
 
     # ── Training ──────────────────────────────────────────────────

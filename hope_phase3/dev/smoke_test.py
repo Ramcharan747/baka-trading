@@ -135,7 +135,8 @@ def main():
     # ── Test 5: LSTM param count ──────────────────────────────────
     print("\n[5/9] LSTM model initialization...")
     lstm = LSTMBaseline(
-        n_features=70, hidden_size=250, n_layers=4, n_outputs=1,
+        n_features=70, hidden_size=config.lstm_hidden,
+        n_layers=config.lstm_layers, n_outputs=1,
     ).to(device)
     lstm_params = sum(p.numel() for p in lstm.parameters())
     print(f"  LSTM params: {lstm_params:,}")

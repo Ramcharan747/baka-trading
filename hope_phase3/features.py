@@ -43,7 +43,7 @@ FEATURE_NAMES = [
     # Group 6: Intraday Seasonality (8)
     "time_sin", "time_cos", "is_opening_30", "is_closing_30",
     "session_progress", "day_of_week_sin", "day_of_week_cos",
-    "is_midday",
+    "is_expiry_week",
     # Group 7: Momentum & Mean Reversion (10)
     "rsi_14", "rsi_30", "sma_dev_20", "sma_dev_60",
     "range_pos_20", "range_pos_60", "macd_hist",
@@ -221,8 +221,8 @@ def compute_features(df: pd.DataFrame,
     dow = dt.dt.dayofweek
     feats['day_of_week_sin'] = np.sin(2 * np.pi * dow / 5)
     feats['day_of_week_cos'] = np.cos(2 * np.pi * dow / 5)
-    feats['is_midday'] = ((minutes_since_open >= 120) &
-                          (minutes_since_open <= 300)).astype(float)
+    # Option expiry effect (Thursday)
+    feats['is_expiry_week'] = (dow == 3).astype(float)  # Thursday = expiry day
 
     # ══ GROUP 7: Momentum & Mean Reversion (10) ════════════════════
     feats['rsi_14'] = _rsi(close, 14)
@@ -244,7 +244,7 @@ def compute_features(df: pd.DataFrame,
 
     feats['momentum_5'] = feats['ret_5'] / (feats['rvol_20'] + 1e-8)
     feats['momentum_20'] = feats['ret_30'] / (feats['rvol_60'] + 1e-8)
-    feats['reversal'] = -feats['ret_5'] * feats['vol_ratio']
+    feats['reversal'] = -feats['ret_1'] / (feats['rvol_5'] + 1e-8)
 
     # ══ GROUP 8: Cross-Asset / Market Factor (6) ═══════════════════
     if nifty_df is not None and len(nifty_df) == len(df):
@@ -281,7 +281,7 @@ def compute_features(df: pd.DataFrame,
         feats['sector_zscore'] = 0.0
 
     # ══ Z-score all non-binary features ════════════════════════════
-    binary_feats = {'is_opening_30', 'is_closing_30', 'is_midday',
+    binary_feats = {'is_opening_30', 'is_closing_30', 'is_expiry_week',
                     'vol_regime', 'session_progress',
                     'time_sin', 'time_cos',
                     'day_of_week_sin', 'day_of_week_cos'}
