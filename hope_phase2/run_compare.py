@@ -17,7 +17,7 @@ from models.lstm_baseline import LSTMBaseline
 from data import INSTRUMENTS, prepare_dataset, build_training_batches
 from train import train_epoch_finance, detach_states
 from evaluate import walk_forward_evaluation
-from backtest import run_backtest
+from backtest import run_backtest, compute_backtest_metrics
 from checkpoint import load_checkpoint
 from losses import ic_loss
 
@@ -36,7 +36,8 @@ def make_hope_config(n_features):
 
 
 def train_lstm(lstm, feat_tensor, lab_tensor, device, epochs=EPOCHS):
-    """Train LSTM with same streaming paradigm as HOPE."""
+    """Train LSTM with same streaming paradigm as HOPE.
+    State persists across epochs (same as HOPE's Titans state)."""
     optimizer = torch.optim.AdamW(
         lstm.parameters(), lr=LR, weight_decay=0.01)
     n_stocks, T, _ = feat_tensor.shape
@@ -44,13 +45,14 @@ def train_lstm(lstm, feat_tensor, lab_tensor, device, epochs=EPOCHS):
     feat_tensor = feat_tensor.to(device)
     lab_tensor = lab_tensor.to(device)
 
+    # Initialize ONCE before epoch loop — state persists across epochs
+    h = torch.zeros(lstm.lstm.num_layers, n_stocks,
+                    lstm.lstm.hidden_size, device=device)
+    c = torch.zeros_like(h)
+    state = (h, c)
+
     for epoch in range(epochs):
         lstm.train()
-        # Reset LSTM hidden state at start of each epoch
-        h = torch.zeros(lstm.lstm.num_layers, n_stocks,
-                        lstm.lstm.hidden_size, device=device)
-        c = torch.zeros_like(h)
-        state = (h, c)
         total_loss = 0.0
 
         for ci in range(n_chunks):
@@ -79,6 +81,49 @@ def train_lstm(lstm, feat_tensor, lab_tensor, device, epochs=EPOCHS):
             print(f"    LSTM epoch {epoch}: loss={avg_loss:.6f}")
 
     return lstm
+
+
+def get_predictions(model, test_data, common_features, device,
+                    model_type="hope", chunk_size=CHUNK_SIZE):
+    """Run model on test data and return raw predictions + true labels per stock."""
+    results = {}
+    for sym, (feat_df, lab_series) in test_data.items():
+        feat = feat_df[common_features].values
+        labs = lab_series.values
+        T = len(feat)
+
+        x = torch.tensor(feat, dtype=torch.float32, device=device).unsqueeze(0)
+
+        if model_type == "lstm":
+            states = None
+        else:
+            states = model.init_state(1, torch.device(device))
+
+        model.eval()
+        all_preds = []
+        eval_chunk = 16
+        n_chunks = T // eval_chunk
+        with torch.no_grad():
+            for ci in range(n_chunks):
+                s = ci * eval_chunk
+                e = s + eval_chunk
+                if model_type == "lstm":
+                    pred, states = model(x[:, s:e, :], states)
+                    if states is not None:
+                        states = (states[0].detach(), states[1].detach())
+                else:
+                    pred, states = model(x[:, s:e, :], states, step=s)
+                    states = detach_states(states)
+                pred_np = pred.squeeze().cpu().numpy()
+                if pred_np.ndim == 0:
+                    pred_np = pred_np.reshape(1)
+                all_preds.extend(pred_np.tolist())
+
+        pred_arr = np.array(all_preds)
+        true_arr = labs[:len(pred_arr)]
+        results[sym] = (pred_arr, true_arr)
+
+    return results
 
 
 def main():
@@ -130,48 +175,61 @@ def main():
 
     # ── Evaluate both ─────────────────────────────────────────────
     print("\n[4/4] Comparing HOPE vs LSTM...")
-    hope_val = walk_forward_evaluation(
-        hope, val_data, common_features, CHUNK_SIZE, device)
-    lstm_val = walk_forward_evaluation(
-        lstm, val_data, common_features, CHUNK_SIZE, device,
-        model_type="lstm")
 
+    # IC evaluation
     hope_test = walk_forward_evaluation(
         hope, test_data, common_features, CHUNK_SIZE, device)
     lstm_test = walk_forward_evaluation(
         lstm, test_data, common_features, CHUNK_SIZE, device,
         model_type="lstm")
 
+    # Backtest: get raw predictions for trade count / win rate
+    hope_preds = get_predictions(hope, test_data, common_features,
+                                 device, model_type="hope")
+    lstm_preds = get_predictions(lstm, test_data, common_features,
+                                 device, model_type="lstm")
+
     # Print comparison table
-    print(f"\n{'='*70}")
+    print(f"\n{'='*90}")
     print(f"  HOPE vs LSTM — FINAL COMPARISON")
-    print(f"{'='*70}")
-    print(f"  {'Stock':12s}  {'HOPE val':>9} {'LSTM val':>9}  "
-          f"{'HOPE test':>10} {'LSTM test':>10}")
-    print(f"  {'-'*60}")
+    print(f"{'='*90}")
+    print(f"  {'Stock':12s}  {'HOPE IC':>8} {'LSTM IC':>8}  "
+          f"{'H Trades':>8} {'L Trades':>8}  "
+          f"{'H WR%':>6} {'L WR%':>6}")
+    print(f"  {'-'*78}")
 
     hope_test_ics, lstm_test_ics = [], []
     for sym in sorted(hope_test.keys()):
-        hv = hope_val[sym]['mean_IC']
-        lv = lstm_val.get(sym, {}).get('mean_IC', 0)
         ht = hope_test[sym]['mean_IC']
         lt = lstm_test.get(sym, {}).get('mean_IC', 0)
         hope_test_ics.append(ht)
         lstm_test_ics.append(lt)
+
+        # Backtest metrics
+        h_pnl, h_trades, h_wr = 0, 0, 0
+        l_pnl, l_trades, l_wr = 0, 0, 0
+        if sym in hope_preds:
+            h_pnl, h_trades, h_wr = compute_backtest_metrics(
+                hope_preds[sym][1], hope_preds[sym][0])
+        if sym in lstm_preds:
+            l_pnl, l_trades, l_wr = compute_backtest_metrics(
+                lstm_preds[sym][1], lstm_preds[sym][0])
+
         winner = "HOPE✅" if ht > lt else "LSTM✅"
-        print(f"  {sym:12s}  {hv:+9.4f} {lv:+9.4f}  "
-              f"{ht:+10.4f} {lt:+10.4f}  {winner}")
+        print(f"  {sym:12s}  {ht:+8.4f} {lt:+8.4f}  "
+              f"{h_trades:8d} {l_trades:8d}  "
+              f"{h_wr*100:5.1f}% {l_wr*100:5.1f}%  {winner}")
 
     hope_mean = np.mean(hope_test_ics)
     lstm_mean = np.mean(lstm_test_ics)
-    print(f"\n  {'MEAN':12s}  {'':9s} {'':9s}  "
-          f"{hope_mean:+10.4f} {lstm_mean:+10.4f}  "
+    print(f"\n  {'MEAN':12s}  {hope_mean:+8.4f} {lstm_mean:+8.4f}  "
+          f"{'':8s} {'':8s}  {'':6s} {'':6s}  "
           f"{'HOPE✅' if hope_mean > lstm_mean else 'LSTM✅'}")
 
     hope_wins = sum(h > l for h, l in
                     zip(hope_test_ics, lstm_test_ics))
     print(f"\n  HOPE beats LSTM: {hope_wins}/{len(hope_test_ics)} stocks")
-    print(f"{'='*70}")
+    print(f"{'='*90}")
 
 
 if __name__ == "__main__":
