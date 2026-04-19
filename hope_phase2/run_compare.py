@@ -178,8 +178,8 @@ def get_predictions(model, feat_tensor, test_data,
 
         else:
             # LSTM: use this stock's slice of warmed-up state
-            h_single = lstm_state[0][:, stock_idx:stock_idx+1, :]
-            c_single = lstm_state[1][:, stock_idx:stock_idx+1, :]
+            h_single = lstm_state[0][:, stock_idx:stock_idx+1, :].contiguous()
+            c_single = lstm_state[1][:, stock_idx:stock_idx+1, :].contiguous()
             stock_lstm_state = (h_single, c_single)
 
             with torch.no_grad():
