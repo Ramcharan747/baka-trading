@@ -241,7 +241,7 @@ def main():
     print(f"  HOPE params: {hope_params:,}")
 
     # ── LSTM: train 3 seeds with parameter-matched hidden_size ────
-    LSTM_HIDDEN = 96   # ~28K params to match HOPE's 27K
+    LSTM_HIDDEN = 46   # ~27K params to match HOPE's 27K
     SEEDS = [0, 42, 123]
 
     print(f"\n[3/4] Training LSTM (hidden={LSTM_HIDDEN}) across {len(SEEDS)} seeds...")
