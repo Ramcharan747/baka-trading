@@ -83,73 +83,121 @@ def train_lstm(lstm, feat_tensor, lab_tensor, device, epochs=EPOCHS):
     return lstm
 
 
-def get_predictions(model, train_data, test_data, common_features, device,
-                    model_type="hope", chunk_size=CHUNK_SIZE):
-    """Run model on test data with warmed-up state and return raw predictions per stock.
-    
-    For HOPE: warm up persistent memory on training data first (critical for DGD).
-    For LSTM: warm up hidden state on training data (less critical but consistent).
+def get_predictions(model, feat_tensor, test_data,
+                    common_features, chunk_size, device,
+                    model_type="hope"):
     """
+    Get raw predictions on test data for backtest.
+
+    Warmup: runs full feat_tensor (the exact training tensor)
+    through the model to build up persistent memory state.
+    This matches exactly what training did.
+
+    Then predicts on test data using that warmed-up state.
+    """
+    model.eval()
+    n_stocks, T_train, n_features = feat_tensor.shape
     results = {}
-    eval_chunk = 16
 
-    for sym, (test_feat_df, test_lab_series) in test_data.items():
-        test_feat = test_feat_df[common_features].values
-        test_labs = test_lab_series.values
-        T_test = len(test_feat)
+    # ── Step 1: Warmup on training tensor ────────────────────────
+    # Use feat_tensor exactly — same data, same length, same order
+    # as training. This gives HOPE the same memory state it had
+    # at the end of training.
+    feat_train = feat_tensor.to(device)
 
-        # Get training data for warmup
-        train_feat_df, _ = train_data[sym]
-        train_feat = train_feat_df[common_features].values
-        T_train = len(train_feat)
-
-        x_train = torch.tensor(
-            train_feat, dtype=torch.float32, device=device).unsqueeze(0)
-        x_test = torch.tensor(
-            test_feat, dtype=torch.float32, device=device).unsqueeze(0)
-
-        # Initialize state
-        if model_type == "lstm":
-            states = None
-        else:
-            states = model.init_state(1, torch.device(device))
-
-        model.eval()
+    if model_type == "hope":
+        states = model.init_state(
+            batch_size=n_stocks, device=torch.device(device))
         with torch.no_grad():
-            # Phase 1: Warm up state on training data
-            n_warmup = T_train // chunk_size
-            for ci in range(n_warmup):
+            for ci in range(T_train // chunk_size):
                 s = ci * chunk_size
                 e = s + chunk_size
-                if model_type == "lstm":
-                    _, states = model(x_train[:, s:e, :], states)
-                    if states is not None:
-                        states = (states[0].detach(), states[1].detach())
-                else:
-                    _, states = model(x_train[:, s:e, :], states, step=s)
-                    states = detach_states(states)
+                x = feat_train[:, s:e, :]
+                _, states = model(x, states, step=s)
+                states = detach_states(states)
+        # states now matches end-of-training memory exactly
+    else:
+        # LSTM: single persistent state across warmup
+        h = torch.zeros(
+            model.lstm.num_layers, n_stocks,
+            model.lstm.hidden_size, device=device)
+        c = torch.zeros_like(h)
+        lstm_state = (h, c)
+        with torch.no_grad():
+            for ci in range(T_train // chunk_size):
+                s = ci * chunk_size
+                e = s + chunk_size
+                x = feat_train[:, s:e, :]
+                _, lstm_state = model(x, lstm_state)
+                lstm_state = (
+                    lstm_state[0].detach(),
+                    lstm_state[1].detach()
+                )
 
-            # Phase 2: Predict on test data using warmed-up state
-            all_preds = []
-            n_test = T_test // eval_chunk
-            for ci in range(n_test):
-                s = ci * eval_chunk
-                e = s + eval_chunk
-                if model_type == "lstm":
-                    pred, states = model(x_test[:, s:e, :], states)
-                    if states is not None:
-                        states = (states[0].detach(), states[1].detach())
-                else:
-                    pred, states = model(x_test[:, s:e, :], states, step=s)
-                    states = detach_states(states)
-                pred_np = pred.squeeze().cpu().numpy()
-                if pred_np.ndim == 0:
-                    pred_np = pred_np.reshape(1)
-                all_preds.extend(pred_np.tolist())
+    # ── Step 2: Predict on each stock's test data ─────────────────
+    # Use each stock's individual test set (from test_data dict)
+    symbols = sorted(test_data.keys())
 
-        pred_arr = np.array(all_preds)
-        true_arr = test_labs[:len(pred_arr)]
-        results[sym] = (pred_arr, true_arr)
+    for stock_idx, sym in enumerate(symbols):
+        feat_df, lab_series = test_data[sym]
+        feat_arr = feat_df[common_features].values
+        lab_arr  = lab_series.values
+        T_test   = len(feat_arr)
+
+        x_test = torch.tensor(
+            feat_arr, dtype=torch.float32, device=device
+        ).unsqueeze(0)   # [1, T_test, n_features]
+
+        all_preds = []
+
+        if model_type == "hope":
+            # Use this stock's slice of the warmed-up state
+            # states is a list of layer dicts, each M_mem is [n_stocks, D, D]
+            # Extract stock_idx slice as a batch=1 state
+            stock_states = []
+            for layer_state in states:
+                s_single = {}
+                for k, v in layer_state.items():
+                    if isinstance(v, torch.Tensor) and v.dim() >= 2:
+                        # slice this stock's memory out
+                        s_single[k] = v[stock_idx:stock_idx+1]
+                    else:
+                        s_single[k] = v
+                stock_states.append(s_single)
+
+            with torch.no_grad():
+                for ci in range(T_test // chunk_size):
+                    s = ci * chunk_size
+                    e = s + chunk_size
+                    x = x_test[:, s:e, :]
+                    pred, stock_states = model(
+                        x, stock_states, step=s)
+                    stock_states = detach_states(stock_states)
+                    all_preds.extend(
+                        pred.squeeze().cpu().numpy().tolist())
+
+        else:
+            # LSTM: use this stock's slice of warmed-up state
+            h_single = lstm_state[0][:, stock_idx:stock_idx+1, :]
+            c_single = lstm_state[1][:, stock_idx:stock_idx+1, :]
+            stock_lstm_state = (h_single, c_single)
+
+            with torch.no_grad():
+                for ci in range(T_test // chunk_size):
+                    s = ci * chunk_size
+                    e = s + chunk_size
+                    x = x_test[:, s:e, :]
+                    pred, stock_lstm_state = model(x, stock_lstm_state)
+                    stock_lstm_state = (
+                        stock_lstm_state[0].detach(),
+                        stock_lstm_state[1].detach()
+                    )
+                    all_preds.extend(
+                        pred.squeeze().cpu().numpy().tolist())
+
+        preds_arr = np.array(all_preds)
+        true_arr  = lab_arr[:len(preds_arr)]
+        results[sym] = (preds_arr, true_arr)
 
     return results
 
@@ -180,12 +228,6 @@ def main():
         build_training_batches(dataset)
     n_stocks, T, n_features = feat_tensor.shape
     print(f"  {n_stocks} stocks, {T} bars, {n_features} features")
-
-    # Reconstruct train_data dict for warmup in get_predictions
-    train_data = {}
-    for sym, (feat, lab) in dataset.items():
-        t1 = int(len(feat) * 0.7)
-        train_data[sym] = (feat.iloc[:t1][common_features], lab.iloc[:t1])
 
     # ── HOPE: load from checkpoint, no retraining ─────────────────
     print("\n[2/4] Loading HOPE from checkpoint...")
@@ -218,10 +260,12 @@ def main():
         model_type="lstm")
 
     # Backtest: get raw predictions for trade count / win rate
-    hope_preds = get_predictions(hope, train_data, test_data, common_features,
-                                 device, model_type="hope")
-    lstm_preds = get_predictions(lstm, train_data, test_data, common_features,
-                                 device, model_type="lstm")
+    hope_preds = get_predictions(
+        hope, feat_tensor, test_data, common_features,
+        CHUNK_SIZE, device, model_type="hope")
+    lstm_preds = get_predictions(
+        lstm, feat_tensor, test_data, common_features,
+        CHUNK_SIZE, device, model_type="lstm")
 
     # Print comparison table
     print(f"\n{'='*90}")
