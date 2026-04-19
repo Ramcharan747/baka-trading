@@ -91,6 +91,9 @@ def download_minute_bars(symbol: str, isin: str, token: str,
                       columns=['timestamp', 'open', 'high', 'low',
                                'close', 'volume', 'oi'])
     df['datetime'] = pd.to_datetime(df['timestamp'])
+    # Strip timezone (Upstox returns UTC+05:30) — keep wall-clock time
+    if df['datetime'].dt.tz is not None:
+        df['datetime'] = df['datetime'].dt.tz_localize(None)
     df = df.drop(columns=['timestamp', 'oi'])
     df = df.drop_duplicates(subset='datetime')
     df = df.sort_values('datetime').reset_index(drop=True)
