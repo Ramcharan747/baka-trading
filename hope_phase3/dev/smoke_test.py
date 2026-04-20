@@ -32,7 +32,7 @@ from labels import compute_labels
 from ic_test import ic_test
 from models.hope import MiniHOPE, HopeConfig
 from models.lstm_baseline import LSTMBaseline
-from train import train_epoch_minute, init_states_hope, init_states_lstm
+from train import train_epoch_minute, init_states_hope, init_states_lstm, make_optimizer
 from losses import sharpe_loss
 
 
@@ -160,7 +160,7 @@ def main():
     feat_t = torch.tensor(np.stack(feat_arrays), dtype=torch.float32).to(device)
     lab_t = torch.tensor(np.stack(lab_arrays), dtype=torch.float32).to(device)
 
-    optimizer = torch.optim.AdamW(hope.parameters(), lr=1e-3)
+    optimizer = make_optimizer(hope, lr=1e-3, weight_decay=0.01, model_type="hope")
     states = init_states_hope(hope, len(symbols), torch.device(device))
     config.chunk_size = 64
 

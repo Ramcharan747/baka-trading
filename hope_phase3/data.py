@@ -28,7 +28,7 @@ def download_minute_bars(symbol: str, isin: str, token: str,
     Paginates by MONTH (API limit).
     Filters to NSE trading hours 09:15–15:30.
     """
-    cache_file = CACHE_DIR / f"{symbol}_1min.parquet"
+    cache_file = CACHE_DIR / f"{symbol}_{from_date}_{to_date}_1min.parquet"
     if cache_file.exists():
         print(f"  {symbol}: loading from cache")
         return pd.read_parquet(cache_file)

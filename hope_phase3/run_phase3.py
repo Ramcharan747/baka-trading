@@ -23,7 +23,7 @@ from features import compute_features, FEATURE_NAMES
 from labels import compute_labels
 from ic_test import ic_test
 from models.hope import MiniHOPE, HopeConfig
-from train import train_epoch_minute, init_states_hope, detach_states
+from train import train_epoch_minute, init_states_hope, detach_states, make_optimizer
 from evaluate import walk_forward_evaluation
 from checkpoint import save_checkpoint, load_checkpoint
 
@@ -230,8 +230,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  HOPE params: {n_params:,}")
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    optimizer = make_optimizer(model, config.lr, config.weight_decay, model_type="hope")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=config.min_lr)
 

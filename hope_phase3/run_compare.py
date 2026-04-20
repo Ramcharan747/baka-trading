@@ -23,7 +23,7 @@ from features import compute_features, FEATURE_NAMES
 from labels import compute_labels
 from models.hope import MiniHOPE, HopeConfig
 from models.lstm_baseline import LSTMBaseline
-from train import train_epoch_minute, init_states_hope, init_states_lstm, detach_states
+from train import train_epoch_minute, init_states_hope, init_states_lstm, detach_states, make_optimizer
 from evaluate import walk_forward_evaluation
 from backtest import compute_backtest_metrics
 from checkpoint import load_checkpoint
@@ -189,8 +189,7 @@ def main():
         hope = MiniHOPE(hope_config).to(device)
 
         # Try loading checkpoint; if none, train from scratch
-        optimizer_hope = torch.optim.AdamW(
-            hope.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+        optimizer_hope = make_optimizer(hope, config.lr, config.weight_decay, model_type="hope")
         hope, _, hope_states, start_epoch, _ = load_checkpoint(
             hope, optimizer_hope, device=device)
 
@@ -240,8 +239,7 @@ def main():
             lstm_params = sum(p.numel() for p in lstm.parameters())
             print(f"  LSTM params: {lstm_params:,}")
 
-        optimizer = torch.optim.AdamW(
-            lstm.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+        optimizer = make_optimizer(lstm, config.lr, config.weight_decay, model_type="lstm")
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=epochs, eta_min=config.min_lr)
 

@@ -54,8 +54,9 @@ class CMSBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(d_model * 2, d_model),
         )
-        # Initialize output layer to near-zero (prevents cold-start dominance)
-        nn.init.zeros_(self.mlp[2].weight)
+        # Initialize output layer to small nonzero (NOT zeros — zeros make
+        # CMS a pure identity x+0=x with near-zero gradients)
+        nn.init.normal_(self.mlp[2].weight, std=0.02)
         nn.init.zeros_(self.mlp[2].bias)
 
         # Gradient buffer: accumulates gradients between updates

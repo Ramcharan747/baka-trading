@@ -17,6 +17,17 @@ import numpy as np
 from losses import sharpe_loss
 
 
+def make_optimizer(model, lr, weight_decay, model_type="hope"):
+    """Create AdamW optimizer, excluding CMS params for HOPE models.
+    CMS params are updated manually via accumulate_gradients/maybe_update."""
+    if model_type == "hope":
+        other_params = [p for n, p in model.named_parameters()
+                        if 'cms_levels' not in n]
+        return torch.optim.AdamW(other_params, lr=lr, weight_decay=weight_decay)
+    else:
+        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+
 def detach_states(states, model_type: str = "hope"):
     """Detach states from computation graph (TBPTT truncation)."""
     if model_type == "lstm":
@@ -136,13 +147,21 @@ def train_epoch_minute(model, feat_tensor: torch.Tensor,
             if input_grad < 1e-10:
                 print("    ❌ Input projection has NO gradient — full gradient block")
 
+        # CMS: capture gradients BEFORE optimizer step (prevents double-update)
+        if model_type == "hope":
+            for layer in model.layers:
+                for cms in layer.cms_levels:
+                    cms.accumulate_gradients()
+
         torch.nn.utils.clip_grad_norm_(
             model.parameters(), config.grad_clip_outer)
         optimizer.step()
 
-        # CMS post-backward (HOPE only)
+        # CMS: apply accumulated gradients on schedule AFTER optimizer step
         if model_type == "hope":
-            model.post_backward(ci)
+            for layer in model.layers:
+                for cms in layer.cms_levels:
+                    cms.maybe_update(ci)
 
         total_loss += loss.item()
 
