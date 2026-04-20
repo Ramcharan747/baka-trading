@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--token",    default=None)
     parser.add_argument("--hf_token", default=None)
     parser.add_argument("--hf_repo",  default="Baka7/hope-finance-phase3")
+    parser.add_argument("--fresh",    action="store_true",
+                        help="Start fresh — ignore existing checkpoints")
     args = parser.parse_args()
 
     config = PhaseConfig(mode=args.mode)
@@ -233,9 +235,14 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=config.min_lr)
 
-    # Try to resume from checkpoint
-    model, optimizer, states, start_epoch, step = load_checkpoint(
-        model, optimizer, device=device)
+    # Try to resume from checkpoint (skip if --fresh)
+    if not args.fresh:
+        model, optimizer, states, start_epoch, step = load_checkpoint(
+            model, optimizer, device=device)
+    else:
+        print("  --fresh: starting from scratch (ignoring checkpoints)")
+        states = None
+        start_epoch = 0
 
     if states is None:
         states = init_states_hope(model, n_stocks, torch.device(device))
