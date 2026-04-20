@@ -2,7 +2,7 @@
 Phase 3 configuration.
 
 Two modes:
-  --mode dev   : 10 stocks, 1 month, 2 epochs (Colab debug)
+  --mode dev   : 10 stocks, 3 months, 10 epochs (Colab debug)
   --mode prod  : 50 stocks, full data, 20 epochs (HPC)
 """
 from __future__ import annotations
@@ -63,7 +63,7 @@ class PhaseConfig:
 
     @property
     def dev_from_date(self):
-        return "2024-01-01"
+        return "2023-10-01"
 
     @property
     def dev_to_date(self):
@@ -71,4 +71,4 @@ class PhaseConfig:
 
     @property
     def dev_epochs(self):
-        return 2
+        return 10

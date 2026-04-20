@@ -187,10 +187,27 @@ def main():
         torch.manual_seed(seed)
         hope_config = make_hope_config(config)
         hope = MiniHOPE(hope_config).to(device)
-        optimizer_dummy = torch.optim.AdamW(hope.parameters(), lr=config.lr)
-        hope, _, _, start_epoch, _ = load_checkpoint(
-            hope, optimizer_dummy, device=device)
-        print(f"  Loaded from epoch {max(0, start_epoch - 1)}")
+
+        # Try loading checkpoint; if none, train from scratch
+        optimizer_hope = torch.optim.AdamW(
+            hope.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+        hope, _, hope_states, start_epoch, _ = load_checkpoint(
+            hope, optimizer_hope, device=device)
+
+        if hope_states is None:
+            print(f"  No checkpoint found — training HOPE from scratch ({epochs} epochs)")
+            hope_states = init_states_hope(hope, n_stocks, torch.device(device))
+            scheduler_hope = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer_hope, T_max=epochs, eta_min=config.min_lr)
+            for epoch in range(epochs):
+                avg_loss, hope_states = train_epoch_minute(
+                    hope, feat_tensor, lab_tensor,
+                    optimizer_hope, scheduler_hope, hope_states, config,
+                    model_type="hope", _epoch=epoch)
+                if epoch == 0 or (epoch + 1) % 5 == 0:
+                    print(f"    Epoch {epoch}: loss={avg_loss:.6f}")
+        else:
+            print(f"  Loaded from epoch {max(0, start_epoch - 1)}")
 
         results = walk_forward_evaluation(
             hope, feat_tensor, test_data, FEATURE_NAMES,
