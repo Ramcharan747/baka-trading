@@ -27,8 +27,9 @@ class LSTMBaseline(nn.Module):
         self.norm = nn.LayerNorm(hidden_size)
         self.output = nn.Linear(hidden_size, n_outputs)
 
-        # Initialize output to near-zero
-        nn.init.zeros_(self.output.weight)
+        # Initialize output to small nonzero (NOT zeros — zeros kill gradient
+        # through self.output because d(pred)/d(h) = W_output = 0)
+        nn.init.normal_(self.output.weight, std=0.01)
         nn.init.zeros_(self.output.bias)
 
     def forward(self, x, state=None):
