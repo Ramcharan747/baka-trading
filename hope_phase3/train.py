@@ -104,16 +104,37 @@ def train_epoch_minute(model, feat_tensor: torch.Tensor,
 
         # Gradient vanish check — only on first chunk of first epoch
         if _epoch == 0 and ci == 0:
-            total_grad_norm = 0.0
-            for p in model.parameters():
-                if p.grad is not None and p.grad.norm() > 0:
-                    total_grad_norm += p.grad.norm().item()
+            layer_grads = {}
+            for name, param in model.named_parameters():
+                if param.grad is not None and param.grad.norm().item() > 0:
+                    layer_grads[name] = param.grad.norm().item()
+
+            total_grad_norm = sum(layer_grads.values())
+            n_params_with_grad = len(layer_grads)
+            total_params = sum(1 for p in model.parameters() if p.requires_grad)
+
+            print(f"\n  Gradient check (epoch 0, chunk 0):")
+            print(f"    Total grad norm: {total_grad_norm:.6f}")
+            print(f"    Params with gradient: {n_params_with_grad}/{total_params}")
+
             if total_grad_norm < 1e-10:
-                raise RuntimeError(
-                    f"GRADIENT VANISHED: total_grad_norm={total_grad_norm:.2e}. "
-                    f"Loss value was {loss.item():.6f}. "
-                    f"Check loss function and data normalization."
-                )
+                raise RuntimeError("GRADIENT VANISHED: zero gradients everywhere")
+            elif total_grad_norm < 1e-5:
+                print(f"    ⚠️  WARNING: very small gradients ({total_grad_norm:.2e})")
+                print(f"    Model may be learning too slowly — check loss scale")
+            else:
+                print(f"    ✅ Gradients flowing normally")
+
+            # Also check CMS specifically (most likely to have dead gradients)
+            cms_grad = sum(v for k, v in layer_grads.items() if 'cms' in k)
+            input_grad = sum(v for k, v in layer_grads.items() if 'input_proj' in k)
+            print(f"    CMS grad norm: {cms_grad:.6f}")
+            print(f"    Input proj grad norm: {input_grad:.6f}")
+
+            if cms_grad < 1e-10:
+                print("    ❌ CMS levels have NO gradient — CMS is dead")
+            if input_grad < 1e-10:
+                print("    ❌ Input projection has NO gradient — full gradient block")
 
         torch.nn.utils.clip_grad_norm_(
             model.parameters(), config.grad_clip_outer)
