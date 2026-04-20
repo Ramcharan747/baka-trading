@@ -149,8 +149,9 @@ class MiniHOPE(nn.Module):
         self.output_norm = nn.LayerNorm(d)
         self.head = nn.Linear(d, config.n_outputs)
 
-        # Initialize head to near-zero (prevent early overconfident predictions)
-        nn.init.zeros_(self.head.weight)
+        # Initialize head to small nonzero (NOT zeros — zeros kill gradient
+        # through self.head because d(pred)/d(h) = W_head = 0)
+        nn.init.normal_(self.head.weight, std=0.01)
         nn.init.zeros_(self.head.bias)
 
     def init_state(self, batch_size: int, device: torch.device) -> list:
