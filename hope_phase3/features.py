@@ -166,6 +166,8 @@ def compute_features(df: pd.DataFrame,
     dollar_vol = close * volume
     feats['dollar_vol_zscore'] = _zscore(np.log1p(dollar_vol))
     feats['vol_acceleration'] = feats['vol_surprise_5'] / (feats['vol_surprise_20'] + 1e-3)
+    # TODO: tick_intensity is constant zero after z-scoring in some datasets.
+    # Likely a computation/scaling issue — low priority, does not block training.
     feats['tick_intensity'] = volume / (high - low + close * 1e-4)
     feats['vwap_vol_ratio'] = feats['vol_surprise_5'] / (feats['vol_surprise_20'] + 1e-3)
 
