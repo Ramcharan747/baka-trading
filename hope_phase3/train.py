@@ -51,7 +51,8 @@ def train_epoch_minute(model, feat_tensor: torch.Tensor,
                        lab_tensor: torch.Tensor,
                        optimizer, scheduler,
                        states, config,
-                       model_type: str = "hope") -> tuple:
+                       model_type: str = "hope",
+                       _epoch: int = 0) -> tuple:
     """
     Train one epoch on minute-bar data with Sharpe loss.
 
@@ -64,6 +65,7 @@ def train_epoch_minute(model, feat_tensor: torch.Tensor,
         states: model states (list of dicts for HOPE, tuple for LSTM)
         config: PhaseConfig
         model_type: "hope" or "lstm"
+        _epoch: current epoch number (for gradient check)
 
     Returns: (avg_loss, new_states)
     """
@@ -88,14 +90,31 @@ def train_epoch_minute(model, feat_tensor: torch.Tensor,
 
         pred = pred.squeeze(-1)  # [n_stocks, chunk]
 
-        # Sharpe loss per stock, then average
-        losses = []
-        for si in range(n_stocks):
-            losses.append(sharpe_loss(pred[si], y[si]))
-        loss = torch.stack(losses).mean()
+        # Vectorized Sharpe loss across all stocks simultaneously
+        # Cleaner gradient path than list comprehension
+        positions = torch.tanh(pred * 10)      # [n_stocks, chunk]
+        pnl = positions * y                     # [n_stocks, chunk]
+        mean_pnl = pnl.mean(dim=1)             # [n_stocks]
+        std_pnl = pnl.std(dim=1).clamp(min=1e-6)
+        sharpe_per_stock = mean_pnl / std_pnl
+        loss = -sharpe_per_stock.mean()
 
         optimizer.zero_grad()
         loss.backward()
+
+        # Gradient vanish check — only on first chunk of first epoch
+        if _epoch == 0 and ci == 0:
+            total_grad_norm = 0.0
+            for p in model.parameters():
+                if p.grad is not None and p.grad.norm() > 0:
+                    total_grad_norm += p.grad.norm().item()
+            if total_grad_norm < 1e-10:
+                raise RuntimeError(
+                    f"GRADIENT VANISHED: total_grad_norm={total_grad_norm:.2e}. "
+                    f"Loss value was {loss.item():.6f}. "
+                    f"Check loss function and data normalization."
+                )
+
         torch.nn.utils.clip_grad_norm_(
             model.parameters(), config.grad_clip_outer)
         optimizer.step()

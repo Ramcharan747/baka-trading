@@ -254,7 +254,7 @@ def main():
         avg_loss, states = train_epoch_minute(
             model, feat_tensor, lab_tensor,
             optimizer, scheduler, states, config,
-            model_type="hope")
+            model_type="hope", _epoch=epoch)
         dt = time.time() - t0
 
         # Gradient flow check (first epoch only)

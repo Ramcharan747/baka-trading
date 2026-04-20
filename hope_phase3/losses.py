@@ -10,7 +10,7 @@ import torch
 
 
 def sharpe_loss(pred: torch.Tensor, target: torch.Tensor,
-                eps: float = 1e-8) -> torch.Tensor:
+                eps: float = 1e-6) -> torch.Tensor:
     """
     Directly optimizes risk-adjusted return (Sharpe ratio).
 
@@ -25,9 +25,8 @@ def sharpe_loss(pred: torch.Tensor, target: torch.Tensor,
     positions = torch.tanh(pred * 10)
     pnl = positions * target          # realized PnL per bar
     mean_pnl = pnl.mean()
-    std_pnl = pnl.std() + eps
-    sharpe = mean_pnl / std_pnl
-    return -sharpe  # minimize negative Sharpe
+    std_pnl = pnl.std().clamp(min=eps)
+    return -mean_pnl / std_pnl  # minimize negative Sharpe
 
 
 def ic_loss(pred: torch.Tensor, target: torch.Tensor,

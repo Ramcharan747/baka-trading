@@ -247,11 +247,24 @@ def compute_features(df: pd.DataFrame,
     feats['reversal'] = -feats['ret_1'] / (feats['rvol_5'] + 1e-8)
 
     # ══ GROUP 8: Cross-Asset / Market Factor (6) ═══════════════════
-    if nifty_df is not None and len(nifty_df) == len(df):
-        nifty_close = nifty_df['close'].astype(float).values
-        nifty_close = pd.Series(nifty_close, index=df.index)
+    if nifty_df is not None and len(nifty_df) > 0:
+        # Align nifty to stock timestamps via datetime index
+        nifty_indexed = nifty_df.set_index(pd.to_datetime(nifty_df['datetime']))
+        stock_dt = pd.to_datetime(df['datetime'])
+        nifty_close = nifty_indexed['close'].astype(float).reindex(
+            stock_dt.values, method='nearest',
+            tolerance=pd.Timedelta('1min')
+        )
+        nifty_close.index = df.index  # re-align to integer index
+
         nifty_ret_1 = nifty_close.pct_change(1)
         nifty_ret_5 = nifty_close.pct_change(5)
+
+        # Assertions: verify alignment actually worked
+        assert nifty_ret_1.isna().mean() < 0.1, \
+            f"nifty_ret_1 is {nifty_ret_1.isna().mean():.1%} NaN — alignment failed"
+        assert nifty_ret_1.std() > 1e-6, \
+            "nifty_ret_1 is constant — NIFTY alignment failed"
 
         feats['nifty_ret_1'] = nifty_ret_1
         feats['nifty_ret_5'] = nifty_ret_5

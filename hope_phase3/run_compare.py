@@ -234,7 +234,7 @@ def main():
             avg_loss, states = train_epoch_minute(
                 lstm, feat_tensor, lab_tensor,
                 optimizer, scheduler, states, config,
-                model_type="lstm")
+                model_type="lstm", _epoch=epoch)
             if epoch == 0 or (epoch + 1) % 5 == 0:
                 print(f"    Epoch {epoch}: loss={avg_loss:.6f}")
 
